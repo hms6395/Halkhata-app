@@ -698,6 +698,10 @@ function settingsHTML(){
       <div class="spacer"></div>
       <button class="btn danger" id="wipeBtn">Erase all data</button>
     </div>
+    <div class="card">
+      <div class="card-title">Credits</div>
+      <p class="small muted"><a href="https://www.flaticon.com/free-icons/ledger" title="Ledger icons" target="_blank" rel="noopener" style="color:var(--gold);">Ledger icons created by Freepik - Flaticon</a></p>
+    </div>
   `;
 }
 function bindSettingsForm(){
