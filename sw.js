@@ -1,4 +1,4 @@
-const CACHE = 'khata-v3';
+const CACHE = 'khata-v4';
 const ASSETS = ['./', './index.html', './style.css', './app.js', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e)=>{
