@@ -260,7 +260,7 @@ function setTab(tab){
 }
 
 function render(){
-  const titles = { home:['Khata','Home'], ledger:['Ledger','All transactions'], add:['New Entry','Add transaction'], insights:['Insights','Where it goes'], more:['More','Loans · Zakat · Settings'] };
+  const titles = { home:['HalKhata','Home'], ledger:['Ledger','All transactions'], add:['New Entry','Add transaction'], insights:['Insights','Where it goes'], more:['More','Loans · Zakat · Settings'] };
   pageEyebrow.textContent = titles[ui.tab][0];
   pageTitle.textContent = titles[ui.tab][1];
   if(ui.tab==='home') renderHome();
