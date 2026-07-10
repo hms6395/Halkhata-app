@@ -299,20 +299,24 @@ a{color:inherit;}
   font-size:12px; margin-bottom:14px; padding:0; display:block;
 }
 
-/* ---------- Modal / sheet ---------- */
+/* ---------- Modal / sheet (bottom, for quick/contextual actions) ---------- */
 .sheet-backdrop{
-  position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:20;
+  position:fixed; inset:0; z-index:20;
   display:flex; align-items:flex-end; justify-content:center;
+  background:rgba(0,0,0,0.55); opacity:0; pointer-events:none;
+  transition:opacity .25s ease;
 }
-.sheet-backdrop.hidden{display:none;}
+.sheet-backdrop.open{opacity:1; pointer-events:auto;}
 .sheet{
   position:relative;
   width:100%; max-width:520px; max-height:88dvh; overflow-y:auto;
   background:var(--surface); border-radius:20px 20px 0 0;
   padding:20px 20px calc(24px + var(--safe-bottom));
   border-top:1px solid var(--border-strong);
+  transform:translateY(100%);
+  transition:transform .3s cubic-bezier(.32,.72,0,1);
 }
-.sheet-handle{width:36px; height:4px; background:var(--border-strong); border-radius:3px; margin:0 auto 16px;}
+.sheet-backdrop.open .sheet{transform:translateY(0);}
 .sheet h2{font-size:18px; margin-bottom:16px; padding-right:36px;}
 .sheet-close{
   position:absolute; top:14px; right:14px; z-index:2;
@@ -320,6 +324,8 @@ a{color:inherit;}
   background:var(--surface-2); border:1px solid var(--border-strong); color:var(--paper);
   display:flex; align-items:center; justify-content:center; font-size:13px;
 }
+.drag-zone{touch-action:none; padding:2px 0 10px; margin-top:-4px;}
+.sheet-handle{width:36px; height:4px; background:var(--border-strong); border-radius:3px; margin:0 auto;}
 
 /* ---------- Add-transaction sliding panel ---------- */
 .add-overlay{position:fixed; inset:0; z-index:16; pointer-events:none;}
@@ -339,6 +345,28 @@ a{color:inherit;}
 .add-overlay.open .backdrop{opacity:1;}
 .add-overlay.open .add-panel{transform:translate(-50%, 0);}
 .add-panel h2{font-size:18px; margin-bottom:16px; padding-right:36px;}
+
+/* ---------- Side drawer (app-wide menu: Loans / Zakat / Categories / Accounts / Settings) ---------- */
+.drawer-backdrop{
+  position:fixed; inset:0; z-index:22;
+  background:rgba(0,0,0,0.55); opacity:0; pointer-events:none;
+  transition:opacity .25s ease;
+}
+.drawer-backdrop.open{opacity:1; pointer-events:auto;}
+.drawer{
+  position:absolute; top:0; right:0; bottom:0;
+  width:86%; max-width:380px;
+  background:var(--surface);
+  border-left:1px solid var(--border-strong);
+  padding:calc(20px + var(--safe-top)) 20px calc(20px + var(--safe-bottom));
+  overflow-y:auto;
+  transform:translateX(100%);
+  transition:transform .3s cubic-bezier(.32,.72,0,1);
+}
+.drawer-backdrop.open .drawer{transform:translateX(0);}
+.drawer-header{margin-bottom:20px; padding-right:36px;}
+.drawer-app-name{font-family:var(--font-display); font-size:21px; font-weight:600; color:var(--paper);}
+.drawer-app-version{font-family:var(--font-mono); font-size:11px; letter-spacing:0.08em; text-transform:uppercase; color:var(--gold); margin-top:2px;}
 
 /* ---------- Toast ---------- */
 .toast{

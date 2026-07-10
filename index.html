@@ -34,8 +34,19 @@
     <div class="backdrop" id="addBackdrop"></div>
     <div class="add-panel" id="addPanel">
       <button class="sheet-close" id="addCloseBtn" aria-label="Close">✕</button>
-      <div class="sheet-handle"></div>
+      <div class="drag-zone" id="addDragZone"><div class="sheet-handle"></div></div>
       <div id="addPanelContent"></div>
+    </div>
+  </div>
+
+  <div id="drawerBackdrop" class="drawer-backdrop">
+    <div class="drawer" id="drawerPanel">
+      <button class="sheet-close" id="drawerCloseBtn" aria-label="Close">✕</button>
+      <div class="drawer-header">
+        <div class="drawer-app-name">Halkhata</div>
+        <div class="drawer-app-version">Version <span id="drawerVersionText"></span></div>
+      </div>
+      <div id="drawerContent"></div>
     </div>
   </div>
 

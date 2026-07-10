@@ -6,6 +6,9 @@
 
 const STORAGE_KEY = 'khata_v1';
 
+// Bump this on every release — shown in the side drawer header.
+const APP_VERSION = '0.2.2';
+
 // Used only to seed a brand-new install, or to migrate an old install
 // that still has the hardcoded account list. Accounts now live in state.
 const ACCOUNTS_SEED = [
@@ -534,7 +537,7 @@ function renderAddPanel(){
   if(!addState.account) addState.account = (activeAccounts()[0]||{}).id || '';
   const panel = document.getElementById('addPanelContent');
   panel.innerHTML = `
-    <h2>New Entry</h2>
+    <h2>New Transaction Entry</h2>
     <div class="seg" style="margin-bottom:18px;">
       ${['Income','Expense','Loan','Transfer'].map(t=>`<button data-set-type="${t}" class="${type===t?'active':''}">${t}</button>`).join('')}
     </div>
@@ -839,13 +842,13 @@ function sidebarMenuHTML(){
     ['accounts','Accounts','Add, edit, archive accounts'],
     ['settings','Settings','Backup, restore, credits'],
   ];
-  return `<h2>Menu</h2><div class="menu-list">${items.map(([k,l,d])=>`
+  return `<div class="menu-list">${items.map(([k,l,d])=>`
     <button class="menu-row" data-sidebar="${k}">
       <span class="menu-row-main"><b>${l}</b><span class="muted small">${d}</span></span>
       <span class="menu-chevron">›</span>
     </button>`).join('')}</div>`;
 }
-function openSidebarMenu(){ showSheet(sidebarMenuHTML()); bindSidebarMenu(); }
+function openSidebarMenu(){ openDrawer(sidebarMenuHTML()); bindSidebarMenu(); }
 function bindSidebarMenu(){
   document.querySelectorAll('[data-sidebar]').forEach(b=>b.onclick=()=>openSidebarSection(b.dataset.sidebar));
 }
@@ -856,7 +859,7 @@ function openSidebarSection(key){
   else if(key==='categories') html = categoryListHTML();
   else if(key==='accounts') html = accountsHTML();
   else if(key==='settings') html = settingsHTML();
-  showSheet(`<button class="sheet-back" id="sheetBackBtn">‹ Menu</button>${html}`);
+  openDrawer(`<button class="sheet-back" id="sheetBackBtn">‹ Menu</button>${html}`);
   document.getElementById('sheetBackBtn').onclick = openSidebarMenu;
   if(key==='zakat') bindZakatInputs();
   if(key==='accounts') bindAccountsForm();
@@ -958,7 +961,7 @@ function bindAccountsForm(){
     }
   });
   const addBtn = document.getElementById('addAcctBtnSidebar');
-  if(addBtn) addBtn.onclick = ()=>{ closeSheet(); addAccountSheet(); };
+  if(addBtn) addBtn.onclick = ()=>{ closeDrawer(); addAccountSheet(); };
 }
 
 function settingsHTML(){
@@ -991,56 +994,69 @@ function bindSettingsForm(){
     const file = e.target.files[0]; if(!file) return;
     const reader = new FileReader();
     reader.onload = ()=>{
-      try{ const parsed = JSON.parse(reader.result); state = parsed; save(); toast('Backup restored'); closeSheet(); render(); }
+      try{ const parsed = JSON.parse(reader.result); state = parsed; save(); toast('Backup restored'); closeDrawer(); render(); }
       catch(err){ toast('Could not read that file'); }
     };
     reader.readAsText(file);
   };
   document.getElementById('wipeBtn').onclick = ()=>{
     if(confirm('This erases every transaction and setting on this phone. Continue?')){
-      localStorage.removeItem(STORAGE_KEY); state = load(); toast('All data erased'); closeSheet(); render();
+      localStorage.removeItem(STORAGE_KEY); state = load(); toast('All data erased'); closeDrawer(); render();
     }
   };
 }
 
-/* ---------------- sheet (bottom modal) ---------------- */
+/* ---------------- sheet (bottom modal, for quick/contextual actions) ---------------- */
 function ensureSheetDom(){
   if(document.getElementById('sheetBackdrop')) return;
   const d = document.createElement('div');
-  d.id='sheetBackdrop'; d.className='sheet-backdrop hidden';
-  d.innerHTML = `<div class="sheet" id="sheetPanel"><button class="sheet-close" id="sheetCloseBtn" aria-label="Close">✕</button><div class="sheet-handle"></div><div id="sheetContent"></div></div>`;
+  d.id='sheetBackdrop'; d.className='sheet-backdrop';
+  d.innerHTML = `<div class="sheet" id="sheetPanel"><button class="sheet-close" id="sheetCloseBtn" aria-label="Close">✕</button><div class="drag-zone" id="sheetDragZone"><div class="sheet-handle"></div></div><div id="sheetContent"></div></div>`;
   d.onclick = (e)=>{ if(e.target===d) closeSheet(); };
   document.body.appendChild(d);
   document.getElementById('sheetCloseBtn').onclick = closeSheet;
-  attachSwipeToClose(document.getElementById('sheetPanel'), closeSheet);
+  attachSwipeToClose(document.getElementById('sheetPanel'), document.getElementById('sheetDragZone'), closeSheet, {axis:'y'});
 }
-function showSheet(html){ ensureSheetDom(); document.getElementById('sheetContent').innerHTML = html; document.getElementById('sheetBackdrop').classList.remove('hidden'); }
-function closeSheet(){ const d=document.getElementById('sheetBackdrop'); if(d) d.classList.add('hidden'); }
+function showSheet(html){ ensureSheetDom(); document.getElementById('sheetContent').innerHTML = html; document.getElementById('sheetBackdrop').classList.add('open'); }
+function closeSheet(){ const d=document.getElementById('sheetBackdrop'); if(d) d.classList.remove('open'); }
 
-/* Drag-down-to-dismiss for any bottom panel. Only starts when the touch
-   begins in the top ~60px (handle/close area) so it doesn't fight with
-   scrolling long content inside the panel. */
-function attachSwipeToClose(panel, closeFn){
-  let startY=0, currentY=0, dragging=false;
-  panel.addEventListener('touchstart', (e)=>{
-    if(e.touches[0].clientY - panel.getBoundingClientRect().top > 60) return;
-    startY = e.touches[0].clientY; currentY = startY; dragging = true;
+/* ---------------- side drawer (app-wide menu) ---------------- */
+function openDrawer(html){
+  document.getElementById('drawerContent').innerHTML = html;
+  document.getElementById('drawerBackdrop').classList.add('open');
+}
+function closeDrawer(){ document.getElementById('drawerBackdrop').classList.remove('open'); }
+
+/* Drag-to-dismiss for a bottom sheet or side panel. Binds the touch
+   listeners to a small dedicated dragZone (not the whole panel), and that
+   zone has CSS touch-action:none, so the browser's native pull-to-refresh
+   gesture never gets a chance to compete with our own drag. touchmove is
+   NOT passive, so we can preventDefault() once a drag is confirmed. For
+   panels that are horizontally centered via transform (translate(-50%,...)),
+   pass centered:true so we don't clobber that offset while dragging. */
+function attachSwipeToClose(panel, dragZone, closeFn, opts){
+  opts = opts || {};
+  const centered = !!opts.centered;
+  let start=0, current=0, dragging=false;
+  dragZone.addEventListener('touchstart', (e)=>{
+    start = e.touches[0].clientY; current = start; dragging = true;
     panel.style.transition = 'none';
   }, {passive:true});
-  panel.addEventListener('touchmove', (e)=>{
+  dragZone.addEventListener('touchmove', (e)=>{
     if(!dragging) return;
-    currentY = e.touches[0].clientY;
-    const delta = Math.max(0, currentY-startY);
-    panel.style.transform = `translateY(${delta}px)`;
-  }, {passive:true});
-  panel.addEventListener('touchend', ()=>{
+    e.preventDefault();
+    current = e.touches[0].clientY;
+    const delta = Math.max(0, current-start);
+    panel.style.transform = centered ? `translate(-50%, ${delta}px)` : `translateY(${delta}px)`;
+  }, {passive:false});
+  dragZone.addEventListener('touchend', ()=>{
     if(!dragging) return;
     dragging = false;
     panel.style.transition = '';
-    const delta = currentY-startY;
+    const delta = current-start;
     panel.style.transform = '';
-    if(delta>100) closeFn();
-    startY=0; currentY=0;
+    if(delta>90) closeFn();
+    start=0; current=0;
   });
 }
 
@@ -1066,7 +1082,10 @@ document.getElementById('menuBtn').onclick = openSidebarMenu;
 document.getElementById('fab').onclick = openAdd;
 document.getElementById('addCloseBtn').onclick = closeAddOverlay;
 document.getElementById('addBackdrop').onclick = closeAddOverlay;
-attachSwipeToClose(document.getElementById('addPanel'), closeAddOverlay);
+attachSwipeToClose(document.getElementById('addPanel'), document.getElementById('addDragZone'), closeAddOverlay, {centered:true});
+document.getElementById('drawerCloseBtn').onclick = closeDrawer;
+document.getElementById('drawerBackdrop').onclick = (e)=>{ if(e.target.id==='drawerBackdrop') closeDrawer(); };
+document.getElementById('drawerVersionText').textContent = APP_VERSION;
 document.querySelectorAll('.tabbtn').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 
 /* ---------------- boot ---------------- */
