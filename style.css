@@ -30,6 +30,7 @@ body{
   overscroll-behavior-y:none;
 }
 #app{
+  position:relative;
   max-width:520px;
   margin:0 auto;
   min-height:100dvh;
@@ -60,6 +61,7 @@ a{color:inherit;}
 }
 #pageTitle{font-size:26px; font-weight:600; color:var(--paper);}
 .iconbtn{
+  position:relative;
   width:38px; height:38px; border-radius:50%;
   border:1px solid var(--border-strong);
   background:var(--surface-2);
@@ -104,7 +106,7 @@ a{color:inherit;}
   margin:22px 0 10px;
 }
 .section-head h2{font-size:15px; color:var(--paper-dim); font-family:var(--font-body); font-weight:600; text-transform:uppercase; letter-spacing:0.06em;}
-.section-head .link{font-size:12px; color:var(--gold); font-family:var(--font-mono);}
+.section-head .link{font-size:12px; color:var(--gold); font-family:var(--font-mono); background:none; border:none; padding:0;}
 
 /* ---------- Net worth hero ---------- */
 .hero{
@@ -124,9 +126,17 @@ a{color:inherit;}
 .acct-item{
   background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px 14px;
 }
+.acct-item[data-reveal-acct]{cursor:pointer;}
 .acct-name{font-size:12px; color:var(--sage);}
 .acct-bal{font-family:var(--font-mono); font-size:17px; margin-top:4px; color:var(--paper);}
 .acct-bal.neg{color:var(--rose);}
+.acct-bal.masked{letter-spacing:3px; color:var(--sage);}
+.acct-item-add{
+  display:flex; align-items:center; justify-content:center;
+  border:1.5px dashed var(--border-strong); border-radius:12px;
+  color:var(--gold); font-size:13px; font-weight:600; min-height:56px;
+  background:transparent;
+}
 
 /* ---------- Buttons ---------- */
 .btn{
@@ -150,15 +160,29 @@ a{color:inherit;}
   color:var(--paper); font-size:15px; font-family:var(--font-body);
 }
 .field input:focus, .field select:focus, .field textarea:focus{outline:2px solid var(--gold); outline-offset:1px;}
-.seg{display:flex; gap:6px; background:var(--surface-2); padding:4px; border-radius:10px; border:1px solid var(--border);}
+.seg{display:flex; gap:6px; background:var(--surface-2); padding:4px; border-radius:10px; border:1px solid var(--border); flex-wrap:wrap;}
 .seg button{
   flex:1; padding:10px 6px; border-radius:8px; border:none; background:transparent;
-  color:var(--paper-dim); font-size:13px; font-weight:600;
+  color:var(--paper-dim); font-size:13px; font-weight:600; white-space:nowrap;
 }
 .seg button.active{background:var(--gold); color:#1a1508;}
 .amount-row{display:flex; gap:8px; align-items:center;}
 .amount-row select{flex:1;}
 .amount-row input{width:130px;}
+
+/* ---------- FAB ---------- */
+.fab{
+  position:absolute;
+  right:20px;
+  bottom:calc(78px + var(--safe-bottom));
+  width:56px; height:56px; border-radius:50%;
+  background:var(--gold); color:#1a1508;
+  border:none; font-size:28px; font-weight:700; line-height:1;
+  display:flex; align-items:center; justify-content:center;
+  box-shadow:0 8px 20px rgba(201,162,39,0.4);
+  z-index:8;
+}
+.fab.hidden{display:none;}
 
 /* ---------- Tab bar ---------- */
 .tabbar{
@@ -172,18 +196,10 @@ a{color:inherit;}
 .tabbtn{
   background:none; border:none; color:var(--sage);
   display:flex; flex-direction:column; align-items:center; gap:3px;
-  font-size:10px; padding:6px 10px; border-radius:10px;
+  font-size:10px; padding:6px 10px; border-radius:10px; flex:1;
 }
 .tabbtn.active{color:var(--gold);}
 .tabicon{font-size:18px; line-height:1;}
-.tabbtn-add{margin-top:-26px;}
-.tabicon.plus{
-  width:52px; height:52px; border-radius:50%;
-  background:var(--gold); color:#1a1508;
-  display:flex; align-items:center; justify-content:center;
-  font-size:26px; font-weight:700;
-  box-shadow:0 6px 16px rgba(201,162,39,0.35);
-}
 
 /* ---------- Ledger list ---------- */
 .txn{
@@ -207,8 +223,15 @@ a{color:inherit;}
   white-space:nowrap;
 }
 .chip.active{background:var(--gold); color:#1a1508; border-color:var(--gold);}
+.filter-row{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:14px;}
+.filter-summary{font-size:12.5px; color:var(--sage);}
+.filter-badge{
+  position:absolute; top:-3px; right:-3px; width:16px; height:16px; border-radius:50%;
+  background:var(--rose); color:#fff; font-size:9px; font-weight:700;
+  display:flex; align-items:center; justify-content:center;
+}
 
-/* ---------- Sub-tabs (Insights / More) ---------- */
+/* ---------- Sub-tabs (Insights) ---------- */
 .subtabs{display:flex; gap:6px; margin-bottom:16px; background:var(--surface-2); padding:4px; border-radius:11px; border:1px solid var(--border);}
 .subtabs button{flex:1; padding:9px 4px; font-size:12px; border-radius:8px; border:none; background:transparent; color:var(--paper-dim); font-weight:600;}
 .subtabs button.active{background:var(--surface-3); color:var(--gold);}
@@ -240,9 +263,11 @@ a{color:inherit;}
 .bar-fill.neg{background:var(--rose);}
 .bar-label{font-size:9px; color:var(--sage); margin-top:5px; font-family:var(--font-mono);}
 
-.heat-row{display:grid; grid-template-columns:100px repeat(var(--cols,3), 1fr); gap:3px; align-items:center; margin-bottom:3px;}
-.heat-cell{aspect-ratio:1.6; border-radius:4px; background:var(--surface-2); font-family:var(--font-mono); font-size:9px; display:flex; align-items:center; justify-content:center; color:var(--paper-dim);}
-.heat-catlabel{font-size:11px; color:var(--paper-dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+/* ---------- Pie chart ---------- */
+.piechart{width:190px; height:190px; border-radius:50%; margin:6px auto 18px;}
+.legend-row{display:flex; align-items:center; justify-content:space-between; padding:6px 0;}
+.legend-dot{display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:8px;}
+.legend-name{display:flex; align-items:center;}
 
 /* ---------- Loans ---------- */
 .loan-card{display:flex; justify-content:space-between; align-items:center;}
@@ -253,6 +278,21 @@ a{color:inherit;}
 .empty{text-align:center; padding:50px 20px; color:var(--sage);}
 .empty h3{color:var(--paper-dim); font-size:16px; margin-bottom:6px;}
 .empty p{font-size:13px; line-height:1.5;}
+
+/* ---------- Sidebar menu list (in sheet) ---------- */
+.menu-list{display:flex; flex-direction:column;}
+.menu-row{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:15px 2px; background:none; border:none; border-bottom:1px solid var(--border);
+  color:var(--paper); text-align:left; width:100%;
+}
+.menu-row:last-child{border-bottom:none;}
+.menu-row-main{display:flex; flex-direction:column; gap:2px;}
+.menu-chevron{color:var(--sage); font-size:18px;}
+.sheet-back{
+  background:none; border:none; color:var(--gold); font-family:var(--font-mono);
+  font-size:12px; margin-bottom:14px; padding:0; display:block;
+}
 
 /* ---------- Modal / sheet ---------- */
 .sheet-backdrop{

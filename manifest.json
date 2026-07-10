@@ -1,7 +1,7 @@
 {
-  "name": "HalKhata — Cashflow Tracker",
-  "short_name": "HalKhata",
-  "description": "Personal ledger, savings goals, daily budget and loans.",
+  "name": "Halkhata — Cashflow Tracker",
+  "short_name": "Halkhata",
+  "description": "Personal ledger, savings goals, daily budget, loans and zakat.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
