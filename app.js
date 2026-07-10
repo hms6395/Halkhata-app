@@ -303,11 +303,13 @@ function zakatData(){
 /* ============================================================
    ROUTER + RENDER
    ============================================================ */
+function currentMonthKey(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
+
 let ui = {
-  tab:'home', prevTab:'home',
+  tab:'home',
   insightsSub:'monthly', analyticsType:'Expense',
-  revealedAccounts:{},
-  ledgerFilters:{ type:'all', range:'all', month:'all', account:'all', category:'all', search:'' },
+  revealedAccounts:{}, netWorthRevealed:false,
+  ledgerFilters:{ type:'all', range:'all', day: todayISO(), month: currentMonthKey(), account:'all', category:'all', search:'' },
 };
 
 const TABS = ['home','ledger','goals','insights'];
@@ -322,22 +324,11 @@ function setTab(tab){
   document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
   render();
 }
-function openAdd(){
-  ui.prevTab = TABS.includes(ui.tab) ? ui.tab : 'home';
-  ui.tab = 'add';
-  render();
-}
-function closeAdd(){
-  ui.tab = ui.prevTab || 'home';
-  document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('active', b.dataset.tab===ui.tab));
-  render();
-}
 
 function render(){
   const titles = {
     home:['Halkhata','Home'], ledger:['Ledger','All transactions'],
     goals:['Goals & Budget','Targets & daily spend'], insights:['Insights','Where it goes'],
-    add:['New Entry','Add transaction'],
   };
   pageEyebrow.textContent = titles[ui.tab][0];
   pageTitle.textContent = titles[ui.tab][1];
@@ -345,10 +336,19 @@ function render(){
 
   if(ui.tab==='home') renderHome();
   else if(ui.tab==='ledger') renderLedger();
-  else if(ui.tab==='add') renderAdd();
   else if(ui.tab==='goals') renderGoals();
   else if(ui.tab==='insights') renderInsights();
   window.scrollTo(0,0);
+}
+
+/* ---------------- ADD TRANSACTION (sliding overlay, independent of tabs) ---------------- */
+function openAdd(){
+  if(!addState.account) addState.account = (activeAccounts()[0]||{}).id || '';
+  renderAddPanel();
+  document.getElementById('addOverlay').classList.add('open');
+}
+function closeAddOverlay(){
+  document.getElementById('addOverlay').classList.remove('open');
 }
 
 /* ---------------- HOME ---------------- */
@@ -359,10 +359,11 @@ function renderHome(){
   const debt = debtBalance();
   const recent = [...state.transactions].sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id)).slice(0,5);
 
+  const nwRevealed = ui.netWorthRevealed;
   view.innerHTML = `
-    <div class="hero">
+    <div class="hero" data-reveal-networth>
       <div class="hero-label">Net Worth</div>
-      <div class="hero-amount">${fmt(nw)}</div>
+      <div class="hero-amount ${nwRevealed?'':'masked'}">${nwRevealed ? fmt(nw) : '••••••••'}</div>
       <div class="hero-sub">${debt>0 ? `Owing <b>${fmt(debt)}</b> to people` : 'No informal debt outstanding'}</div>
     </div>
 
@@ -387,7 +388,6 @@ function renderHome(){
           <div class="acct-bal ${revealed && a.balance<0?'neg':''} ${revealed?'':'masked'}">${revealed ? fmt(a.balance) : '••••••'}</div>
         </div>`;
       }).join('')}
-      <button class="acct-item-add" data-add-account>+ Add account</button>
     </div>
 
     <div class="section-head"><h2>Recent activity</h2><span class="link" data-goto="ledger">See all</span></div>
@@ -430,12 +430,13 @@ function addAccountSheet(){
 }
 
 /* ---------------- LEDGER ---------------- */
+const FUNNEL_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 4 21 4 14 12.5 14 19 10 21 10 12.5 3 4"></polygon></svg>`;
+
 function ledgerFilterCount(){
   const f = ui.ledgerFilters;
   let n=0;
   if(f.type!=='all') n++;
   if(f.range!=='all') n++;
-  if(f.month!=='all') n++;
   if(f.account!=='all') n++;
   if(f.category!=='all') n++;
   if(f.search.trim()) n++;
@@ -452,17 +453,14 @@ function filteredTransactions(){
     const q = f.search.trim().toLowerCase();
     txns = txns.filter(t=>(t.subcategory||'').toLowerCase().includes(q) || (t.context||'').toLowerCase().includes(q));
   }
-  if(f.month!=='all'){
-    txns = txns.filter(t=>monthKeyOf(t.date)===f.month);
-  } else if(f.range==='today'){
-    txns = txns.filter(t=>t.date===todayISO());
+  if(f.range==='day'){
+    txns = txns.filter(t=>t.date===f.day);
   } else if(f.range==='week'){
     const now = new Date(); const start = new Date(now); start.setDate(now.getDate()-now.getDay());
     const startStr = start.toISOString().slice(0,10);
     txns = txns.filter(t=>t.date>=startStr && t.date<=todayISO());
   } else if(f.range==='month'){
-    const mk = todayISO().slice(0,7);
-    txns = txns.filter(t=>monthKeyOf(t.date)===mk);
+    txns = txns.filter(t=>monthKeyOf(t.date)===f.month);
   }
   return txns;
 }
@@ -477,7 +475,7 @@ function renderLedger(){
   view.innerHTML = `
     <div class="filter-row">
       <span class="filter-summary">${txns.length} transaction${txns.length===1?'':'s'}</span>
-      <button class="iconbtn" id="openFiltersBtn" aria-label="Filter">⏷${count?`<span class="filter-badge">${count}</span>`:''}</button>
+      <button class="iconbtn" id="openFiltersBtn" aria-label="Filter">${FUNNEL_ICON}${count?`<span class="filter-badge">${count}</span>`:''}</button>
     </div>
     ${Object.keys(grouped).length ? Object.keys(grouped).map(d=>`
       <div class="txn-date">${d}</div>
@@ -490,7 +488,6 @@ function monthLabel(mk){ const [y,m]=mk.split('-'); return `${MONTH_NAMES[+m-1]}
 
 function ledgerFilterSheetHTML(){
   const f = ui.ledgerFilters;
-  const monthOptions = [...new Set(state.transactions.map(t=>monthKeyOf(t.date)))].sort().reverse();
   const catOptions = f.type==='all' || f.type==='Transfer' ? allCategoriesFlat() : categoriesFor(f.type);
   return `
     <h2>Filter transactions</h2>
@@ -498,11 +495,10 @@ function ledgerFilterSheetHTML(){
       <div class="seg">${['all','Income','Expense','Loan','Transfer'].map(t=>`<button data-f-type="${t}" class="${f.type===t?'active':''}">${t==='all'?'All':t}</button>`).join('')}</div>
     </div>
     <div class="field"><label>Time range</label>
-      <div class="seg">${[['all','All'],['today','Today'],['week','Week'],['month','This month']].map(([k,l])=>`<button data-f-range="${k}" class="${f.range===k?'active':''}">${l}</button>`).join('')}</div>
+      <div class="seg">${[['all','All'],['day','Day'],['week','Week'],['month','Month']].map(([k,l])=>`<button data-f-range="${k}" class="${f.range===k?'active':''}">${l}</button>`).join('')}</div>
     </div>
-    <div class="field"><label>Specific month</label>
-      <select id="f-month"><option value="all">Any</option>${monthOptions.map(mk=>`<option value="${mk}" ${f.month===mk?'selected':''}>${monthLabel(mk)}</option>`).join('')}</select>
-    </div>
+    ${f.range==='day' ? `<div class="field"><label>Which day</label><input type="date" id="f-day" value="${f.day}" /></div>` : ''}
+    ${f.range==='month' ? `<div class="field"><label>Which month</label><input type="month" id="f-month" value="${f.month}" /></div>` : ''}
     <div class="field"><label>Account</label>
       <select id="f-account"><option value="all">All accounts</option>${state.accounts.map(a=>`<option value="${a.id}" ${f.account===a.id?'selected':''}>${esc(a.name)}</option>`).join('')}</select>
     </div>
@@ -520,23 +516,25 @@ function ledgerFilterSheetHTML(){
 function openLedgerFilters(){ showSheet(ledgerFilterSheetHTML()); bindLedgerFilterSheet(); }
 function bindLedgerFilterSheet(){
   document.querySelectorAll('[data-f-type]').forEach(b=>b.onclick=()=>{ ui.ledgerFilters.type=b.dataset.fType; ui.ledgerFilters.category='all'; showSheet(ledgerFilterSheetHTML()); bindLedgerFilterSheet(); });
-  document.querySelectorAll('[data-f-range]').forEach(b=>b.onclick=()=>{ ui.ledgerFilters.range=b.dataset.fRange; if(b.dataset.fRange!=='all') ui.ledgerFilters.month='all'; showSheet(ledgerFilterSheetHTML()); bindLedgerFilterSheet(); });
-  const monthEl=document.getElementById('f-month'); if(monthEl) monthEl.onchange=()=>{ ui.ledgerFilters.month=monthEl.value; if(monthEl.value!=='all') ui.ledgerFilters.range='all'; };
+  document.querySelectorAll('[data-f-range]').forEach(b=>b.onclick=()=>{ ui.ledgerFilters.range=b.dataset.fRange; showSheet(ledgerFilterSheetHTML()); bindLedgerFilterSheet(); });
+  const dayEl=document.getElementById('f-day'); if(dayEl) dayEl.onchange=()=>{ ui.ledgerFilters.day=dayEl.value; };
+  const monthEl=document.getElementById('f-month'); if(monthEl) monthEl.onchange=()=>{ ui.ledgerFilters.month=monthEl.value; };
   const accEl=document.getElementById('f-account'); if(accEl) accEl.onchange=()=>{ ui.ledgerFilters.account=accEl.value; };
   const catEl=document.getElementById('f-category'); if(catEl) catEl.onchange=()=>{ ui.ledgerFilters.category=catEl.value; };
   const searchEl=document.getElementById('f-search'); if(searchEl) searchEl.oninput=()=>{ ui.ledgerFilters.search=searchEl.value; };
   document.getElementById('applyFiltersBtn').onclick=()=>{ closeSheet(); renderLedger(); };
-  document.getElementById('clearFiltersBtn').onclick=()=>{ ui.ledgerFilters={type:'all',range:'all',month:'all',account:'all',category:'all',search:''}; closeSheet(); renderLedger(); };
+  document.getElementById('clearFiltersBtn').onclick=()=>{ ui.ledgerFilters={type:'all',range:'all',day:todayISO(),month:currentMonthKey(),account:'all',category:'all',search:''}; closeSheet(); renderLedger(); };
 }
 
 /* ---------------- ADD TRANSACTION ---------------- */
 let addState = { type:'Expense', date: todayISO(), account:'', account2:'', category:'', subcategory:'', context:'', amount:'' };
 
-function renderAdd(){
+function renderAddPanel(){
   const type = addState.type;
   if(!addState.account) addState.account = (activeAccounts()[0]||{}).id || '';
-  view.innerHTML = `
-    <button class="sheet-back" id="cancelAddBtn">‹ Cancel</button>
+  const panel = document.getElementById('addPanelContent');
+  panel.innerHTML = `
+    <h2>New Entry</h2>
     <div class="seg" style="margin-bottom:18px;">
       ${['Income','Expense','Loan','Transfer'].map(t=>`<button data-set-type="${t}" class="${type===t?'active':''}">${t}</button>`).join('')}
     </div>
@@ -571,7 +569,7 @@ function renderAdd(){
 
     <div class="field">
       <label>${type==='Loan' ? "Person's name" : 'Subcategory'}</label>
-      <input type="text" id="f-subcategory" placeholder="${type==='Loan'?'e.g. Rafiq':'e.g. merchant, purpose'}" value="${esc(addState.subcategory)}" />
+      <input type="text" id="f-subcategory" placeholder="${type==='Loan'?'e.g. Rafiq':'Choose subcategory'}" value="${esc(addState.subcategory)}" />
     </div>
 
     <div class="field">
@@ -587,8 +585,7 @@ function renderAdd(){
     <button class="btn" id="saveTxnBtn">Save entry</button>
   `;
 
-  document.getElementById('cancelAddBtn').onclick = closeAdd;
-  document.querySelectorAll('[data-set-type]').forEach(b=>b.onclick=()=>{ addState.type=b.dataset.setType; addState.category=''; renderAdd(); });
+  document.querySelectorAll('[data-set-type]').forEach(b=>b.onclick=()=>{ addState.type=b.dataset.setType; addState.category=''; renderAddPanel(); });
   const bind = (id,key)=>{ const el=document.getElementById(id); if(el) el.oninput=el.onchange=()=>{ addState[key]=el.value; }; };
   bind('f-date','date'); bind('f-account','account'); bind('f-account2','account2');
   bind('f-subcategory','subcategory'); bind('f-context','context'); bind('f-amount','amount');
@@ -603,7 +600,7 @@ function renderAdd(){
         save();
         addState.category = clean;
       } else { addState.category=''; }
-      renderAdd();
+      renderAddPanel();
     } else { addState.category = catEl.value; }
   };
   document.getElementById('saveTxnBtn').onclick = saveTransaction;
@@ -637,7 +634,7 @@ function saveTransaction(){
   save();
   toast('Saved to the ledger');
   addState = { type:addState.type, date: todayISO(), account:addState.account, account2:'', category:'', subcategory:'', context:'', amount:'' };
-  closeAdd();
+  closeAddOverlay();
 }
 
 function openTxnSheet(id){
@@ -938,6 +935,7 @@ function categoryListHTML(){
 function accountsHTML(){
   return `
     <h2>Accounts</h2>
+    <button class="btn secondary" id="addAcctBtnSidebar" style="margin-bottom:16px;">+ Add account</button>
     ${state.accounts.map(a=>`
       <div class="card">
         <div class="row-between" style="margin-bottom:10px;">
@@ -949,7 +947,6 @@ function accountsHTML(){
         ${!a.archived?`<button class="btn danger" data-del-acct="${a.id}">Remove account</button>`:''}
       </div>
     `).join('')}
-    <button class="btn secondary" id="addAcctBtnSidebar">+ Add account</button>
   `;
 }
 function bindAccountsForm(){
@@ -1011,12 +1008,41 @@ function ensureSheetDom(){
   if(document.getElementById('sheetBackdrop')) return;
   const d = document.createElement('div');
   d.id='sheetBackdrop'; d.className='sheet-backdrop hidden';
-  d.innerHTML = `<div class="sheet"><div class="sheet-handle"></div><div id="sheetContent"></div></div>`;
+  d.innerHTML = `<div class="sheet" id="sheetPanel"><button class="sheet-close" id="sheetCloseBtn" aria-label="Close">✕</button><div class="sheet-handle"></div><div id="sheetContent"></div></div>`;
   d.onclick = (e)=>{ if(e.target===d) closeSheet(); };
   document.body.appendChild(d);
+  document.getElementById('sheetCloseBtn').onclick = closeSheet;
+  attachSwipeToClose(document.getElementById('sheetPanel'), closeSheet);
 }
 function showSheet(html){ ensureSheetDom(); document.getElementById('sheetContent').innerHTML = html; document.getElementById('sheetBackdrop').classList.remove('hidden'); }
 function closeSheet(){ const d=document.getElementById('sheetBackdrop'); if(d) d.classList.add('hidden'); }
+
+/* Drag-down-to-dismiss for any bottom panel. Only starts when the touch
+   begins in the top ~60px (handle/close area) so it doesn't fight with
+   scrolling long content inside the panel. */
+function attachSwipeToClose(panel, closeFn){
+  let startY=0, currentY=0, dragging=false;
+  panel.addEventListener('touchstart', (e)=>{
+    if(e.touches[0].clientY - panel.getBoundingClientRect().top > 60) return;
+    startY = e.touches[0].clientY; currentY = startY; dragging = true;
+    panel.style.transition = 'none';
+  }, {passive:true});
+  panel.addEventListener('touchmove', (e)=>{
+    if(!dragging) return;
+    currentY = e.touches[0].clientY;
+    const delta = Math.max(0, currentY-startY);
+    panel.style.transform = `translateY(${delta}px)`;
+  }, {passive:true});
+  panel.addEventListener('touchend', ()=>{
+    if(!dragging) return;
+    dragging = false;
+    panel.style.transition = '';
+    const delta = currentY-startY;
+    panel.style.transform = '';
+    if(delta>100) closeFn();
+    startY=0; currentY=0;
+  });
+}
 
 /* ---------------- global event delegation ---------------- */
 document.addEventListener('click', (e)=>{
@@ -1029,15 +1055,18 @@ document.addEventListener('click', (e)=>{
   const revealEl = e.target.closest('[data-reveal-acct]');
   if(revealEl){ ui.revealedAccounts[revealEl.dataset.revealAcct] = !ui.revealedAccounts[revealEl.dataset.revealAcct]; renderHome(); return; }
 
+  const revealNwEl = e.target.closest('[data-reveal-networth]');
+  if(revealNwEl){ ui.netWorthRevealed = !ui.netWorthRevealed; renderHome(); return; }
+
   const openAcctsEl = e.target.closest('[data-open-accounts]');
   if(openAcctsEl){ openSidebarSection('accounts'); return; }
-
-  const addAcctEl = e.target.closest('[data-add-account]');
-  if(addAcctEl){ addAccountSheet(); return; }
 });
 
 document.getElementById('menuBtn').onclick = openSidebarMenu;
 document.getElementById('fab').onclick = openAdd;
+document.getElementById('addCloseBtn').onclick = closeAddOverlay;
+document.getElementById('addBackdrop').onclick = closeAddOverlay;
+attachSwipeToClose(document.getElementById('addPanel'), closeAddOverlay);
 document.querySelectorAll('.tabbtn').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 
 /* ---------------- boot ---------------- */
