@@ -1,12 +1,14 @@
 /* ============================================================
-   KHATA — personal cashflow ledger
+   HALKHATA — personal cashflow ledger
    Single source of truth: state.transactions[]
    Everything else below is a computed view over it.
    ============================================================ */
 
 const STORAGE_KEY = 'khata_v1';
 
-const ACCOUNTS = [
+// Used only to seed a brand-new install, or to migrate an old install
+// that still has the hardcoded account list. Accounts now live in state.
+const ACCOUNTS_SEED = [
   { id:'city',   name:'City Bank' },
   { id:'bkash',  name:'Bkash' },
   { id:'midland',name:'Midland' },
@@ -23,8 +25,9 @@ const CATEGORY_TAXONOMY = {
 
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
+const CHART_PALETTE = ['#C9A227','#D1495B','#8FA69B','#6FA8DC','#E1B15A','#8E6FCE','#4FB0A5','#D98E73','#B98CCB','#7FA0C9'];
+
 const DEFAULT_SETTINGS = {
-  initialBalances: { city:0, bkash:0, midland:0, home:0, wallet:0, pf:0 },
   idealSaveRate: 15000,
   annualTarget: 180000,
   flexibleAnnualTarget: 140000,
@@ -48,15 +51,26 @@ function load(){
     if(raw){
       const parsed = JSON.parse(raw);
       parsed.settings = Object.assign({}, DEFAULT_SETTINGS, parsed.settings || {});
-      parsed.settings.initialBalances = Object.assign({}, DEFAULT_SETTINGS.initialBalances, parsed.settings.initialBalances || {});
       parsed.settings.goldRates = Object.assign({}, DEFAULT_SETTINGS.goldRates, parsed.settings.goldRates || {});
       parsed.settings.customCategories = Object.assign({Income:[],Expense:[]}, parsed.settings.customCategories || {});
       parsed.transactions = parsed.transactions || [];
       parsed.loanNotes = parsed.loanNotes || [];
+      // migrate accounts from old hardcoded list + settings.initialBalances if needed
+      if(!parsed.accounts){
+        const oldBalances = (parsed.settings && parsed.settings.initialBalances) || {};
+        parsed.accounts = ACCOUNTS_SEED.map(a => ({ id:a.id, name:a.name, initialBalance: oldBalances[a.id]||0, archived:false }));
+      }
+      parsed.accounts.forEach(a => { if(a.archived===undefined) a.archived=false; });
+      delete parsed.settings.initialBalances;
       return parsed;
     }
   }catch(e){ console.error('load failed', e); }
-  return { transactions:[], settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), loanNotes:[] };
+  return {
+    transactions:[],
+    accounts: ACCOUNTS_SEED.map(a => ({ id:a.id, name:a.name, initialBalance:0, archived:false })),
+    settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)),
+    loanNotes:[],
+  };
 }
 
 function save(){
@@ -82,8 +96,14 @@ function toast(msg){
   clearTimeout(toast._h);
   toast._h = setTimeout(()=>t.classList.remove('show'), 1800);
 }
-function accountName(id){ const a=ACCOUNTS.find(x=>x.id===id); return a?a.name:id; }
+function accountById(id){ return state.accounts.find(a=>a.id===id); }
+function accountName(id){ const a=accountById(id); return a?a.name:id; }
+function activeAccounts(){ return state.accounts.filter(a=>!a.archived); }
 function esc(s){ return (s||'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function colorForCategory(name){
+  let h=0; for(let i=0;i<name.length;i++) h = (h*31 + name.charCodeAt(i)) >>> 0;
+  return CHART_PALETTE[h % CHART_PALETTE.length];
+}
 
 function categoriesFor(type){
   if(type==='Income') return [...CATEGORY_TAXONOMY.Income, ...state.settings.customCategories.Income];
@@ -91,16 +111,45 @@ function categoriesFor(type){
   if(type==='Loan') return CATEGORY_TAXONOMY.Loan;
   return [];
 }
+function allCategoriesFlat(){
+  return [...new Set([...categoriesFor('Income'), ...categoriesFor('Expense'), ...categoriesFor('Loan')])];
+}
+
+/* ---------------- accounts CRUD ---------------- */
+function addAccount(name, initialBalance){
+  const id = uid();
+  state.accounts.push({ id, name: name.trim()||'Untitled account', initialBalance:Number(initialBalance)||0, archived:false });
+  save();
+  return id;
+}
+function updateAccount(id, patch){
+  const a = accountById(id);
+  if(a) Object.assign(a, patch);
+  save();
+}
+function deleteAccount(id){
+  const hasTxns = state.transactions.some(t => t.amounts[id]!==undefined && t.amounts[id]!==0);
+  if(hasTxns){
+    updateAccount(id, { archived:true });
+  } else {
+    state.accounts = state.accounts.filter(a=>a.id!==id);
+    save();
+  }
+}
 
 /* ---------------- core derived math ---------------- */
 function txnTotal(t){ return Object.values(t.amounts).reduce((a,b)=>a+(b||0),0); }
 
 function accountBalance(accId){
-  let bal = state.settings.initialBalances[accId] || 0;
+  const a = accountById(accId);
+  let bal = a ? (a.initialBalance||0) : 0;
   for(const t of state.transactions) bal += (t.amounts[accId]||0);
   return bal;
 }
-function allAccountBalances(){ return ACCOUNTS.map(a=>({...a, balance:accountBalance(a.id)})); }
+function allAccountBalances(includeArchived){
+  const list = includeArchived ? state.accounts : activeAccounts();
+  return list.map(a=>({...a, balance:accountBalance(a.id)}));
+}
 
 function debtBalance(){
   let taken=0, paid=0;
@@ -121,7 +170,7 @@ function receivableBalance(){
   return given - received;
 }
 function netWorth(){
-  const accTotal = ACCOUNTS.reduce((s,a)=>s+accountBalance(a.id),0);
+  const accTotal = state.accounts.reduce((s,a)=>s+accountBalance(a.id),0);
   return accTotal + receivableBalance() - debtBalance();
 }
 
@@ -139,7 +188,7 @@ function monthlySummary(year){
     const salarySavingsRate = salaryIncome>0 ? (salaryPL/salaryIncome*100) : 0;
     months.push({ m, key, name:MONTH_NAMES[m-1], income, expense, pl, savingsRate, salaryPL, salarySavingsRate, hasData:txns.length>0 });
   }
-  const initialTotal = ACCOUNTS.reduce((s,a)=>s+(state.settings.initialBalances[a.id]||0),0);
+  const initialTotal = state.accounts.reduce((s,a)=>s+(a.initialBalance||0),0);
   let running = initialTotal;
   months.forEach(mo=>{
     const net = state.transactions.filter(t=>t.date.startsWith(mo.key)).reduce((s,t)=>s+txnTotal(t),0);
@@ -147,6 +196,13 @@ function monthlySummary(year){
     mo.runningBalance = running;
   });
   return months;
+}
+
+function yearlyRollup(year){
+  const months = monthlySummary(year);
+  return months.reduce((acc,m)=>({
+    income: acc.income+m.income, expense: acc.expense+m.expense, pl: acc.pl+m.pl
+  }), {income:0, expense:0, pl:0});
 }
 
 function savingsGoalData(){
@@ -202,7 +258,7 @@ function dailyBudgetData(){
 }
 
 function categoryMatrix(year, type){
-  const months = monthlySummary(year).filter(m=>m.hasData || true).map(m=>m.key);
+  const months = monthlySummary(year).map(m=>m.key);
   const data = {};
   state.transactions.filter(t=>t.type===type && t.date.startsWith(String(year))).forEach(t=>{
     data[t.category] = data[t.category] || {};
@@ -247,34 +303,58 @@ function zakatData(){
 /* ============================================================
    ROUTER + RENDER
    ============================================================ */
-let ui = { tab:'home', insightsSub:'monthly', moreSub:'loans', ledgerFilterType:'all', ledgerFilterMonth:'all' };
+let ui = {
+  tab:'home', prevTab:'home',
+  insightsSub:'monthly', analyticsType:'Expense',
+  revealedAccounts:{},
+  ledgerFilters:{ type:'all', range:'all', month:'all', account:'all', category:'all', search:'' },
+};
+
+const TABS = ['home','ledger','goals','insights'];
 
 const view = document.getElementById('view');
 const pageTitle = document.getElementById('pageTitle');
 const pageEyebrow = document.getElementById('pageEyebrow');
+const fab = document.getElementById('fab');
 
 function setTab(tab){
   ui.tab = tab;
   document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
   render();
 }
+function openAdd(){
+  ui.prevTab = TABS.includes(ui.tab) ? ui.tab : 'home';
+  ui.tab = 'add';
+  render();
+}
+function closeAdd(){
+  ui.tab = ui.prevTab || 'home';
+  document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('active', b.dataset.tab===ui.tab));
+  render();
+}
 
 function render(){
-  const titles = { home:['HalKhata','Home'], ledger:['Ledger','All transactions'], add:['New Entry','Add transaction'], insights:['Insights','Where it goes'], more:['More','Loans · Zakat · Settings'] };
+  const titles = {
+    home:['Halkhata','Home'], ledger:['Ledger','All transactions'],
+    goals:['Goals & Budget','Targets & daily spend'], insights:['Insights','Where it goes'],
+    add:['New Entry','Add transaction'],
+  };
   pageEyebrow.textContent = titles[ui.tab][0];
   pageTitle.textContent = titles[ui.tab][1];
+  fab.classList.toggle('hidden', !(ui.tab==='home' || ui.tab==='ledger'));
+
   if(ui.tab==='home') renderHome();
   else if(ui.tab==='ledger') renderLedger();
   else if(ui.tab==='add') renderAdd();
+  else if(ui.tab==='goals') renderGoals();
   else if(ui.tab==='insights') renderInsights();
-  else if(ui.tab==='more') renderMore();
   window.scrollTo(0,0);
 }
 
 /* ---------------- HOME ---------------- */
 function renderHome(){
   const nw = netWorth();
-  const accs = allAccountBalances();
+  const accs = allAccountBalances(false);
   const budget = dailyBudgetData();
   const debt = debtBalance();
   const recent = [...state.transactions].sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id)).slice(0,5);
@@ -286,7 +366,7 @@ function renderHome(){
       <div class="hero-sub">${debt>0 ? `Owing <b>${fmt(debt)}</b> to people` : 'No informal debt outstanding'}</div>
     </div>
 
-    <div class="card" data-goto="insights" data-sub="budget">
+    <div class="card" data-goto="goals">
       <div class="card-title">Today's Budget</div>
       <div class="row-between">
         <div>
@@ -297,13 +377,17 @@ function renderHome(){
       </div>
     </div>
 
-    <div class="section-head"><h2>Accounts</h2><span class="link" data-goto="more" data-sub="settings">Edit</span></div>
+    <div class="section-head"><h2>Accounts</h2><button class="link" data-open-accounts>✎ Edit</button></div>
     <div class="acct-grid">
-      ${accs.map(a=>`
-        <div class="acct-item">
-          <div class="acct-name">${a.name}</div>
-          <div class="acct-bal ${a.balance<0?'neg':''}">${fmt(a.balance)}</div>
-        </div>`).join('')}
+      ${accs.map(a=>{
+        const revealed = !!ui.revealedAccounts[a.id];
+        return `
+        <div class="acct-item" data-reveal-acct="${a.id}">
+          <div class="acct-name">${esc(a.name)}</div>
+          <div class="acct-bal ${revealed && a.balance<0?'neg':''} ${revealed?'':'masked'}">${revealed ? fmt(a.balance) : '••••••'}</div>
+        </div>`;
+      }).join('')}
+      <button class="acct-item-add" data-add-account>+ Add account</button>
     </div>
 
     <div class="section-head"><h2>Recent activity</h2><span class="link" data-goto="ledger">See all</span></div>
@@ -329,44 +413,130 @@ function txnRow(t){
     </div>`;
 }
 
+function addAccountSheet(){
+  showSheet(`
+    <h2>New account</h2>
+    <div class="field"><label>Name</label><input type="text" id="newAcctName" placeholder="e.g. Savings account" /></div>
+    <div class="field"><label>Starting balance</label><input type="number" id="newAcctBal" value="0" /></div>
+    <button class="btn" id="newAcctSaveBtn">Add account</button>
+  `);
+  document.getElementById('newAcctSaveBtn').onclick = ()=>{
+    const name = document.getElementById('newAcctName').value.trim();
+    const bal = parseFloat(document.getElementById('newAcctBal').value)||0;
+    if(!name){ toast('Enter a name'); return; }
+    addAccount(name, bal);
+    closeSheet(); toast('Account added'); render();
+  };
+}
+
 /* ---------------- LEDGER ---------------- */
-function renderLedger(){
-  const types = ['all','Income','Expense','Loan','Transfer'];
+function ledgerFilterCount(){
+  const f = ui.ledgerFilters;
+  let n=0;
+  if(f.type!=='all') n++;
+  if(f.range!=='all') n++;
+  if(f.month!=='all') n++;
+  if(f.account!=='all') n++;
+  if(f.category!=='all') n++;
+  if(f.search.trim()) n++;
+  return n;
+}
+
+function filteredTransactions(){
+  const f = ui.ledgerFilters;
   let txns = [...state.transactions];
-  if(ui.ledgerFilterType!=='all') txns = txns.filter(t=>t.type===ui.ledgerFilterType);
-  if(ui.ledgerFilterMonth!=='all') txns = txns.filter(t=>monthKeyOf(t.date)===ui.ledgerFilterMonth);
+  if(f.type!=='all') txns = txns.filter(t=>t.type===f.type);
+  if(f.account!=='all') txns = txns.filter(t=>t.amounts[f.account]!==undefined && t.amounts[f.account]!==0);
+  if(f.category!=='all') txns = txns.filter(t=>t.category===f.category);
+  if(f.search.trim()){
+    const q = f.search.trim().toLowerCase();
+    txns = txns.filter(t=>(t.subcategory||'').toLowerCase().includes(q) || (t.context||'').toLowerCase().includes(q));
+  }
+  if(f.month!=='all'){
+    txns = txns.filter(t=>monthKeyOf(t.date)===f.month);
+  } else if(f.range==='today'){
+    txns = txns.filter(t=>t.date===todayISO());
+  } else if(f.range==='week'){
+    const now = new Date(); const start = new Date(now); start.setDate(now.getDate()-now.getDay());
+    const startStr = start.toISOString().slice(0,10);
+    txns = txns.filter(t=>t.date>=startStr && t.date<=todayISO());
+  } else if(f.range==='month'){
+    const mk = todayISO().slice(0,7);
+    txns = txns.filter(t=>monthKeyOf(t.date)===mk);
+  }
+  return txns;
+}
+
+function renderLedger(){
+  let txns = filteredTransactions();
   txns.sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
-
-  const monthOptions = [...new Set(state.transactions.map(t=>monthKeyOf(t.date)))].sort().reverse();
-
   let grouped = {};
   txns.forEach(t=>{ grouped[t.date]=grouped[t.date]||[]; grouped[t.date].push(t); });
+  const count = ledgerFilterCount();
 
   view.innerHTML = `
-    <div class="chipbar">
-      ${types.map(ty=>`<button class="chip ${ui.ledgerFilterType===ty?'active':''}" data-ledger-type="${ty}">${ty==='all'?'All':ty}</button>`).join('')}
-    </div>
-    <div class="field" style="margin-bottom:16px;">
-      <select id="monthFilter">
-        <option value="all">All months</option>
-        ${monthOptions.map(mk=>`<option value="${mk}" ${ui.ledgerFilterMonth===mk?'selected':''}>${monthLabel(mk)}</option>`).join('')}
-      </select>
+    <div class="filter-row">
+      <span class="filter-summary">${txns.length} transaction${txns.length===1?'':'s'}</span>
+      <button class="iconbtn" id="openFiltersBtn" aria-label="Filter">⏷${count?`<span class="filter-badge">${count}</span>`:''}</button>
     </div>
     ${Object.keys(grouped).length ? Object.keys(grouped).map(d=>`
       <div class="txn-date">${d}</div>
       <div class="card">${grouped[d].map(txnRow).join('')}</div>
-    `).join('') : `<div class="empty"><h3>Nothing here</h3><p>Try a different filter, or log a new transaction.</p></div>`}
+    `).join('') : `<div class="empty"><h3>Nothing here</h3><p>Try different filters, or log a new transaction.</p></div>`}
   `;
-  document.getElementById('monthFilter').onchange = e=>{ ui.ledgerFilterMonth=e.target.value; renderLedger(); };
+  document.getElementById('openFiltersBtn').onclick = openLedgerFilters;
 }
 function monthLabel(mk){ const [y,m]=mk.split('-'); return `${MONTH_NAMES[+m-1]} ${y}`; }
 
+function ledgerFilterSheetHTML(){
+  const f = ui.ledgerFilters;
+  const monthOptions = [...new Set(state.transactions.map(t=>monthKeyOf(t.date)))].sort().reverse();
+  const catOptions = f.type==='all' || f.type==='Transfer' ? allCategoriesFlat() : categoriesFor(f.type);
+  return `
+    <h2>Filter transactions</h2>
+    <div class="field"><label>Type</label>
+      <div class="seg">${['all','Income','Expense','Loan','Transfer'].map(t=>`<button data-f-type="${t}" class="${f.type===t?'active':''}">${t==='all'?'All':t}</button>`).join('')}</div>
+    </div>
+    <div class="field"><label>Time range</label>
+      <div class="seg">${[['all','All'],['today','Today'],['week','Week'],['month','This month']].map(([k,l])=>`<button data-f-range="${k}" class="${f.range===k?'active':''}">${l}</button>`).join('')}</div>
+    </div>
+    <div class="field"><label>Specific month</label>
+      <select id="f-month"><option value="all">Any</option>${monthOptions.map(mk=>`<option value="${mk}" ${f.month===mk?'selected':''}>${monthLabel(mk)}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Account</label>
+      <select id="f-account"><option value="all">All accounts</option>${state.accounts.map(a=>`<option value="${a.id}" ${f.account===a.id?'selected':''}>${esc(a.name)}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Category</label>
+      <select id="f-category"><option value="all">All</option>${catOptions.map(c=>`<option value="${c}" ${f.category===c?'selected':''}>${c.replace(/_/g,' ')}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Search subcategory / context</label>
+      <input type="text" id="f-search" value="${esc(f.search)}" placeholder="e.g. Rafiq, groceries" />
+    </div>
+    <button class="btn" id="applyFiltersBtn">Show results</button>
+    <div class="spacer"></div>
+    <button class="btn ghost" id="clearFiltersBtn">Clear all filters</button>
+  `;
+}
+function openLedgerFilters(){ showSheet(ledgerFilterSheetHTML()); bindLedgerFilterSheet(); }
+function bindLedgerFilterSheet(){
+  document.querySelectorAll('[data-f-type]').forEach(b=>b.onclick=()=>{ ui.ledgerFilters.type=b.dataset.fType; ui.ledgerFilters.category='all'; showSheet(ledgerFilterSheetHTML()); bindLedgerFilterSheet(); });
+  document.querySelectorAll('[data-f-range]').forEach(b=>b.onclick=()=>{ ui.ledgerFilters.range=b.dataset.fRange; if(b.dataset.fRange!=='all') ui.ledgerFilters.month='all'; showSheet(ledgerFilterSheetHTML()); bindLedgerFilterSheet(); });
+  const monthEl=document.getElementById('f-month'); if(monthEl) monthEl.onchange=()=>{ ui.ledgerFilters.month=monthEl.value; if(monthEl.value!=='all') ui.ledgerFilters.range='all'; };
+  const accEl=document.getElementById('f-account'); if(accEl) accEl.onchange=()=>{ ui.ledgerFilters.account=accEl.value; };
+  const catEl=document.getElementById('f-category'); if(catEl) catEl.onchange=()=>{ ui.ledgerFilters.category=catEl.value; };
+  const searchEl=document.getElementById('f-search'); if(searchEl) searchEl.oninput=()=>{ ui.ledgerFilters.search=searchEl.value; };
+  document.getElementById('applyFiltersBtn').onclick=()=>{ closeSheet(); renderLedger(); };
+  document.getElementById('clearFiltersBtn').onclick=()=>{ ui.ledgerFilters={type:'all',range:'all',month:'all',account:'all',category:'all',search:''}; closeSheet(); renderLedger(); };
+}
+
 /* ---------------- ADD TRANSACTION ---------------- */
-let addState = { type:'Expense', date: todayISO(), account:'city', account2:'', category:'', subcategory:'', context:'', amount:'' };
+let addState = { type:'Expense', date: todayISO(), account:'', account2:'', category:'', subcategory:'', context:'', amount:'' };
 
 function renderAdd(){
   const type = addState.type;
+  if(!addState.account) addState.account = (activeAccounts()[0]||{}).id || '';
   view.innerHTML = `
+    <button class="sheet-back" id="cancelAddBtn">‹ Cancel</button>
     <div class="seg" style="margin-bottom:18px;">
       ${['Income','Expense','Loan','Transfer'].map(t=>`<button data-set-type="${t}" class="${type===t?'active':''}">${t}</button>`).join('')}
     </div>
@@ -378,14 +548,14 @@ function renderAdd(){
 
     ${type==='Transfer' ? `
       <div class="field"><label>From account</label>
-        <select id="f-account">${ACCOUNTS.map(a=>`<option value="${a.id}" ${addState.account===a.id?'selected':''}>${a.name}</option>`).join('')}</select>
+        <select id="f-account">${activeAccounts().map(a=>`<option value="${a.id}" ${addState.account===a.id?'selected':''}>${esc(a.name)}</option>`).join('')}</select>
       </div>
       <div class="field"><label>To account</label>
-        <select id="f-account2">${ACCOUNTS.map(a=>`<option value="${a.id}" ${addState.account2===a.id?'selected':''}>${a.name}</option>`).join('')}</select>
+        <select id="f-account2">${activeAccounts().map(a=>`<option value="${a.id}" ${addState.account2===a.id?'selected':''}>${esc(a.name)}</option>`).join('')}</select>
       </div>
     ` : `
       <div class="field"><label>Account</label>
-        <select id="f-account">${ACCOUNTS.map(a=>`<option value="${a.id}" ${addState.account===a.id?'selected':''}>${a.name}</option>`).join('')}</select>
+        <select id="f-account">${activeAccounts().map(a=>`<option value="${a.id}" ${addState.account===a.id?'selected':''}>${esc(a.name)}</option>`).join('')}</select>
       </div>
     `}
 
@@ -417,7 +587,8 @@ function renderAdd(){
     <button class="btn" id="saveTxnBtn">Save entry</button>
   `;
 
-  document.querySelectorAll('[data-set-type]').forEach(b=>b.onclick=()=>{ addState.type=b.dataset.setType; addState.category=''; syncFormIntoState(); renderAdd(); });
+  document.getElementById('cancelAddBtn').onclick = closeAdd;
+  document.querySelectorAll('[data-set-type]').forEach(b=>b.onclick=()=>{ addState.type=b.dataset.setType; addState.category=''; renderAdd(); });
   const bind = (id,key)=>{ const el=document.getElementById(id); if(el) el.oninput=el.onchange=()=>{ addState[key]=el.value; }; };
   bind('f-date','date'); bind('f-account','account'); bind('f-account2','account2');
   bind('f-subcategory','subcategory'); bind('f-context','context'); bind('f-amount','amount');
@@ -437,7 +608,6 @@ function renderAdd(){
   };
   document.getElementById('saveTxnBtn').onclick = saveTransaction;
 }
-function syncFormIntoState(){ /* values already bound live via oninput */ }
 
 function saveTransaction(){
   const amt = parseFloat(addState.amount);
@@ -445,6 +615,7 @@ function saveTransaction(){
   if(addState.type!=='Transfer' && !addState.category){ toast('Choose a category'); return; }
   if(addState.type==='Loan' && !addState.subcategory.trim()){ toast("Enter the person's name"); return; }
   if(addState.type==='Transfer' && addState.account===addState.account2){ toast('Pick two different accounts'); return; }
+  if(!addState.account){ toast('Add an account first'); return; }
 
   const t = { id:uid(), date:addState.date, type:addState.type, subcategory:addState.subcategory.trim(), context:addState.context.trim(), amounts:{} };
 
@@ -455,8 +626,9 @@ function saveTransaction(){
     const sign = (addState.category==='Loan_Taken'||addState.category==='Received') ? amt : -amt;
     t.amounts[addState.account]=sign;
   } else if(addState.type==='Transfer'){
-    const toPF = addState.account2==='pf';
-    t.category = toPF ? 'Hold' : `From_${accountName(addState.account)}`;
+    const toAccount = accountById(addState.account2);
+    const isPF = toAccount && toAccount.name.toLowerCase().includes('provident');
+    t.category = isPF ? 'Hold' : `From_${accountName(addState.account)}`;
     t.amounts[addState.account] = -amt;
     t.amounts[addState.account2] = amt;
   }
@@ -464,14 +636,14 @@ function saveTransaction(){
   state.transactions.push(t);
   save();
   toast('Saved to the ledger');
-  addState = { type:addState.type, date: todayISO(), account:'city', account2:'', category:'', subcategory:'', context:'', amount:'' };
-  setTab('home');
+  addState = { type:addState.type, date: todayISO(), account:addState.account, account2:'', category:'', subcategory:'', context:'', amount:'' };
+  closeAdd();
 }
 
 function openTxnSheet(id){
   const t = state.transactions.find(x=>x.id===id);
   if(!t) return;
-  const rows = Object.entries(t.amounts).filter(([,v])=>v).map(([acc,v])=>`<div class="row-between small" style="padding:4px 0;"><span class="muted">${accountName(acc)}</span><span style="font-family:var(--font-mono);">${fmtSigned(v)}</span></div>`).join('');
+  const rows = Object.entries(t.amounts).filter(([,v])=>v).map(([acc,v])=>`<div class="row-between small" style="padding:4px 0;"><span class="muted">${esc(accountName(acc))}</span><span style="font-family:var(--font-mono);">${fmtSigned(v)}</span></div>`).join('');
   showSheet(`
     <h2>${esc(t.category.replace(/_/g,' '))}</h2>
     <div class="muted small" style="margin-bottom:14px;">${t.date} · ${t.type}</div>
@@ -486,47 +658,55 @@ function openTxnSheet(id){
   };
 }
 
-/* ---------------- INSIGHTS ---------------- */
-function renderInsights(){
-  const subs = [['monthly','Monthly'],['goals','Goals'],['budget','Budget'],['analytics','Categories']];
-  view.innerHTML = `<div class="subtabs">${subs.map(([k,l])=>`<button data-insight="${k}" class="${ui.insightsSub===k?'active':''}">${l}</button>`).join('')}</div><div id="insightBody"></div>`;
-  document.querySelectorAll('[data-insight]').forEach(b=>b.onclick=()=>{ ui.insightsSub=b.dataset.insight; renderInsights(); });
-  const body = document.getElementById('insightBody');
-  if(ui.insightsSub==='monthly') body.innerHTML = monthlyHTML();
-  else if(ui.insightsSub==='goals') body.innerHTML = goalsHTML();
-  else if(ui.insightsSub==='budget') body.innerHTML = budgetHTML();
-  else body.innerHTML = analyticsHTML();
-  if(ui.insightsSub==='goals') bindGoalRadios();
+/* ---------------- GOALS & BUDGET ---------------- */
+function renderGoals(){
+  view.innerHTML = budgetStatusHTML() + budgetInputsHTML() + savingsTargetsHTML() + goalsHTML();
+  bindGoalRadios();
+  document.querySelectorAll('[data-set]').forEach(el=>el.oninput=()=>{ state.settings[el.dataset.set]=parseFloat(el.value)||0; save(); });
 }
 
-function monthlyHTML(){
-  const year = new Date().getFullYear();
-  const months = monthlySummary(year);
-  const maxBal = Math.max(...months.map(m=>Math.abs(m.runningBalance)), 1);
-  const active = months.filter(m=>m.hasData);
+function budgetStatusHTML(){
+  const b = dailyBudgetData();
+  const pct = Math.min(Math.max((b.spentMonthToDate/(b.allowedToDate||1))*100,0),160);
   return `
-    <div class="card">
-      <div class="card-title">Running balance — ${year}</div>
-      <div class="barchart">
-        ${months.map(m=>`
-          <div class="bar-col">
-            <div class="bar-fill ${m.runningBalance<0?'neg':''}" style="height:${Math.max(Math.abs(m.runningBalance)/maxBal*100,2)}%"></div>
-            <div class="bar-label">${m.name.slice(0,3)}</div>
-          </div>`).join('')}
-      </div>
+    <div class="card budget-status">
+      <div class="budget-emoji">${b.status.emoji}</div>
+      <div class="budget-msg">${b.status.msg}</div>
+      <div class="budget-figure">${fmt(Math.abs(b.diff))} ${b.diff>=0?'under':'over'} for the month so far</div>
+      <div class="progressbar"><div class="progressbar-fill ${pct>100?'over':''}" style="width:${Math.min(pct,100)}%"></div></div>
     </div>
-    ${active.length===0?`<div class="empty"><p>Log some transactions to see your monthly report.</p></div>`: months.filter(m=>m.hasData).map(m=>`
-      <div class="card">
-        <div class="row-between" style="margin-bottom:8px;"><b>${m.name}</b><span class="muted small">Savings rate ${m.savingsRate.toFixed(0)}%</span></div>
-        <div class="row-between small"><span class="muted">Income</span><span style="font-family:var(--font-mono);">${fmt(m.income)}</span></div>
-        <div class="row-between small"><span class="muted">Expense</span><span style="font-family:var(--font-mono);">${fmt(m.expense)}</span></div>
-        <div class="row-between small"><span class="muted">P/L</span><span style="font-family:var(--font-mono); color:${m.pl>=0?'var(--gold)':'var(--rose)'}">${fmtSigned(m.pl)}</span></div>
-        <div class="row-between small"><span class="muted">Balance at month end</span><span style="font-family:var(--font-mono);">${fmt(m.runningBalance)}</span></div>
-      </div>
-    `).join('')}
+    <div class="card">
+      <div class="row-between small"><span class="muted">Daily budget</span><span style="font-family:var(--font-mono);">${fmt(b.dailyBudget)}</span></div>
+      <div class="row-between small"><span class="muted">Spent today</span><span style="font-family:var(--font-mono);">${fmt(b.spentToday)}</span></div>
+      <div class="row-between small"><span class="muted">Remaining today</span><span style="font-family:var(--font-mono); color:${b.remainingToday>=0?'var(--gold)':'var(--rose)'}">${fmt(b.remainingToday)}</span></div>
+      <div class="row-between small"><span class="muted">Spent this month</span><span style="font-family:var(--font-mono);">${fmt(b.spentMonthToDate)}</span></div>
+      <div class="row-between small"><span class="muted">Income estimate used</span><span style="font-family:var(--font-mono);">${fmt(b.incomeEstimate)}</span></div>
+    </div>
   `;
 }
-
+function budgetInputsHTML(){
+  const s = state.settings;
+  return `
+    <div class="card">
+      <div class="card-title">Budget inputs</div>
+      <div class="field"><label>Expected monthly income <span class="muted">(0 = auto)</span></label><input type="number" data-set="expectedMonthlyIncome" value="${s.expectedMonthlyIncome}" /></div>
+      <div class="field"><label>Home support allowance</label><input type="number" data-set="homeSupport" value="${s.homeSupport}" /></div>
+      <div class="field"><label>Investment allowance</label><input type="number" data-set="investmentAllowance" value="${s.investmentAllowance}" /></div>
+      <div class="field"><label>Office cost</label><input type="number" data-set="officeCost" value="${s.officeCost}" /></div>
+    </div>
+  `;
+}
+function savingsTargetsHTML(){
+  const s = state.settings;
+  return `
+    <div class="card">
+      <div class="card-title">Savings targets</div>
+      <div class="field"><label>Ideal save rate (monthly)</label><input type="number" data-set="idealSaveRate" value="${s.idealSaveRate}" /></div>
+      <div class="field"><label>Annual target (strict)</label><input type="number" data-set="annualTarget" value="${s.annualTarget}" /></div>
+      <div class="field"><label>Annual target (flexible)</label><input type="number" data-set="flexibleAnnualTarget" value="${s.flexibleAnnualTarget}" /></div>
+    </div>
+  `;
+}
 function goalsHTML(){
   const g = savingsGoalData();
   const order = ['ideal','current','strict','flexible'];
@@ -552,32 +732,58 @@ function goalsHTML(){
 }
 function bindGoalRadios(){
   document.querySelectorAll('[data-goal-radio]').forEach(el=>el.onclick=()=>{
-    state.settings.activeGoalStrategy = el.dataset.goalRadio; save(); renderInsights();
+    state.settings.activeGoalStrategy = el.dataset.goalRadio; save(); renderGoals();
   });
 }
 
-function budgetHTML(){
-  const b = dailyBudgetData();
-  const pct = Math.min(Math.max((b.spentMonthToDate/(b.allowedToDate||1))*100,0),160);
+/* ---------------- INSIGHTS ---------------- */
+function renderInsights(){
+  const subs = [['monthly','Monthly'],['charts','Charts'],['categories','Categories']];
+  view.innerHTML = `<div class="subtabs">${subs.map(([k,l])=>`<button data-insight="${k}" class="${ui.insightsSub===k?'active':''}">${l}</button>`).join('')}</div><div id="insightBody"></div>`;
+  document.querySelectorAll('[data-insight]').forEach(b=>b.onclick=()=>{ ui.insightsSub=b.dataset.insight; renderInsights(); });
+  const body = document.getElementById('insightBody');
+  if(ui.insightsSub==='monthly') body.innerHTML = monthlyHTML();
+  else if(ui.insightsSub==='charts') body.innerHTML = chartsHTML();
+  else body.innerHTML = categoryBreakdownHTML();
+  if(ui.insightsSub!=='monthly') document.querySelectorAll('[data-analytics-type]').forEach(b=>b.onclick=()=>{ ui.analyticsType=b.dataset.analyticsType; renderInsights(); });
+}
+
+function monthlyHTML(){
+  const year = new Date().getFullYear();
+  const months = monthlySummary(year);
+  const rollup = yearlyRollup(year);
+  const maxBal = Math.max(...months.map(m=>Math.abs(m.runningBalance)), 1);
+  const active = months.filter(m=>m.hasData);
   return `
-    <div class="card budget-status">
-      <div class="budget-emoji">${b.status.emoji}</div>
-      <div class="budget-msg">${b.status.msg}</div>
-      <div class="budget-figure">${fmt(Math.abs(b.diff))} ${b.diff>=0?'under':'over'} for the month so far</div>
-      <div class="progressbar"><div class="progressbar-fill ${pct>100?'over':''}" style="width:${Math.min(pct,100)}%"></div></div>
+    <div class="card">
+      <div class="card-title">${year} so far</div>
+      <div class="row-between small"><span class="muted">Total income</span><span style="font-family:var(--font-mono);">${fmt(rollup.income)}</span></div>
+      <div class="row-between small"><span class="muted">Total expense</span><span style="font-family:var(--font-mono);">${fmt(rollup.expense)}</span></div>
+      <div class="row-between small"><span class="muted">Net P/L</span><span style="font-family:var(--font-mono); color:${rollup.pl>=0?'var(--gold)':'var(--rose)'}">${fmtSigned(rollup.pl)}</span></div>
     </div>
     <div class="card">
-      <div class="row-between small"><span class="muted">Daily budget</span><span style="font-family:var(--font-mono);">${fmt(b.dailyBudget)}</span></div>
-      <div class="row-between small"><span class="muted">Spent today</span><span style="font-family:var(--font-mono);">${fmt(b.spentToday)}</span></div>
-      <div class="row-between small"><span class="muted">Remaining today</span><span style="font-family:var(--font-mono); color:${b.remainingToday>=0?'var(--gold)':'var(--rose)'}">${fmt(b.remainingToday)}</span></div>
-      <div class="row-between small"><span class="muted">Spent this month</span><span style="font-family:var(--font-mono);">${fmt(b.spentMonthToDate)}</span></div>
-      <div class="row-between small"><span class="muted">Income estimate used</span><span style="font-family:var(--font-mono);">${fmt(b.incomeEstimate)}</span></div>
+      <div class="card-title">Running balance — ${year}</div>
+      <div class="barchart">
+        ${months.map(m=>`
+          <div class="bar-col">
+            <div class="bar-fill ${m.runningBalance<0?'neg':''}" style="height:${Math.max(Math.abs(m.runningBalance)/maxBal*100,2)}%"></div>
+            <div class="bar-label">${m.name.slice(0,3)}</div>
+          </div>`).join('')}
+      </div>
     </div>
-    <p class="muted small">Set a fixed "expected monthly income" in More → Settings for a steadier daily budget instead of relying on this month's income so far.</p>
+    ${active.length===0?`<div class="empty"><p>Log some transactions to see your monthly report.</p></div>`: months.filter(m=>m.hasData).map(m=>`
+      <div class="card">
+        <div class="row-between" style="margin-bottom:8px;"><b>${m.name}</b><span class="muted small">Savings rate ${m.savingsRate.toFixed(0)}%</span></div>
+        <div class="row-between small"><span class="muted">Income</span><span style="font-family:var(--font-mono);">${fmt(m.income)}</span></div>
+        <div class="row-between small"><span class="muted">Expense</span><span style="font-family:var(--font-mono);">${fmt(m.expense)}</span></div>
+        <div class="row-between small"><span class="muted">P/L</span><span style="font-family:var(--font-mono); color:${m.pl>=0?'var(--gold)':'var(--rose)'}">${fmtSigned(m.pl)}</span></div>
+        <div class="row-between small"><span class="muted">Balance at month end</span><span style="font-family:var(--font-mono);">${fmt(m.runningBalance)}</span></div>
+      </div>
+    `).join('')}
   `;
 }
 
-function analyticsHTML(){
+function categoryBreakdownHTML(){
   const year = new Date().getFullYear();
   const type = ui.analyticsType || 'Expense';
   const mat = categoryMatrix(year, type);
@@ -597,25 +803,73 @@ function analyticsHTML(){
       `).join('')}
     </div>` : `<div class="empty"><p>No ${type.toLowerCase()} logged for ${year} yet.</p></div>`}
   `;
-  }
-function bindAnalyticsToggle(){
-  document.querySelectorAll('[data-analytics-type]').forEach(b=>b.onclick=()=>{ ui.analyticsType=b.dataset.analyticsType; renderInsights(); });
 }
 
-/* ---------------- MORE (Loans / Zakat / Settings) ---------------- */
-function renderMore(){
-  const subs = [['loans','Loans'],['zakat','Zakat'],['settings','Settings']];
-  view.innerHTML = `<div class="subtabs">${subs.map(([k,l])=>`<button data-more="${k}" class="${ui.moreSub===k?'active':''}">${l}</button>`).join('')}</div><div id="moreBody"></div>`;
-  document.querySelectorAll('[data-more]').forEach(b=>b.onclick=()=>{ ui.moreSub=b.dataset.more; renderMore(); });
-  const body = document.getElementById('moreBody');
-  if(ui.moreSub==='loans') body.innerHTML = loansHTML();
-  else if(ui.moreSub==='zakat') body.innerHTML = zakatHTML();
-  else { body.innerHTML = settingsHTML(); bindSettingsForm(); }
+function chartsHTML(){
+  const year = new Date().getFullYear();
+  const type = ui.analyticsType || 'Expense';
+  const mat = categoryMatrix(year, type);
+  const total = mat.categories.reduce((s,c)=>s+mat.catTotal(c),0) || 1;
+  let acc = 0;
+  const stops = mat.categories.map(c=>{
+    const val = mat.catTotal(c); const pct = val/total*100; const start=acc; acc+=pct;
+    return `${colorForCategory(c)} ${start}% ${acc}%`;
+  }).join(', ');
+  return `
+    <div class="seg" style="margin-bottom:14px;">
+      ${['Expense','Income'].map(t=>`<button data-analytics-type="${t}" class="${type===t?'active':''}">${t}</button>`).join('')}
+    </div>
+    ${mat.categories.length? `
+    <div class="card">
+      <div class="card-title">${type} split — ${year}</div>
+      <div class="piechart" style="background:conic-gradient(${stops});"></div>
+      ${mat.categories.map(c=>`
+        <div class="legend-row">
+          <span class="legend-name small"><span class="legend-dot" style="background:${colorForCategory(c)};"></span>${c.replace(/_/g,' ')}</span>
+          <span class="small" style="font-family:var(--font-mono);">${fmt(mat.catTotal(c))} · ${(mat.catTotal(c)/total*100).toFixed(0)}%</span>
+        </div>
+      `).join('')}
+    </div>` : `<div class="empty"><p>No ${type.toLowerCase()} logged for ${year} yet.</p></div>`}
+  `;
+}
+
+/* ---------------- SIDEBAR (hamburger menu) ---------------- */
+function sidebarMenuHTML(){
+  const items = [
+    ['loans','Loans','Money owed to/by people'],
+    ['zakat','Zakat','Nisab & due calculator'],
+    ['categories','Categories','View your category list'],
+    ['accounts','Accounts','Add, edit, archive accounts'],
+    ['settings','Settings','Backup, restore, credits'],
+  ];
+  return `<h2>Menu</h2><div class="menu-list">${items.map(([k,l,d])=>`
+    <button class="menu-row" data-sidebar="${k}">
+      <span class="menu-row-main"><b>${l}</b><span class="muted small">${d}</span></span>
+      <span class="menu-chevron">›</span>
+    </button>`).join('')}</div>`;
+}
+function openSidebarMenu(){ showSheet(sidebarMenuHTML()); bindSidebarMenu(); }
+function bindSidebarMenu(){
+  document.querySelectorAll('[data-sidebar]').forEach(b=>b.onclick=()=>openSidebarSection(b.dataset.sidebar));
+}
+function openSidebarSection(key){
+  let html='';
+  if(key==='loans') html = loansHTML();
+  else if(key==='zakat') html = zakatHTML();
+  else if(key==='categories') html = categoryListHTML();
+  else if(key==='accounts') html = accountsHTML();
+  else if(key==='settings') html = settingsHTML();
+  showSheet(`<button class="sheet-back" id="sheetBackBtn">‹ Menu</button>${html}`);
+  document.getElementById('sheetBackBtn').onclick = openSidebarMenu;
+  if(key==='zakat') bindZakatInputs();
+  if(key==='accounts') bindAccountsForm();
+  if(key==='settings') bindSettingsForm();
 }
 
 function loansHTML(){
   const loans = loanBalances();
   return `
+    <h2>Loans</h2>
     ${loans.length? loans.map(p=>`
       <div class="card loan-card">
         <div>
@@ -629,7 +883,7 @@ function loansHTML(){
           ${p.owedToMe<=0&&p.iOwe<=0?`<div class="small muted">Settled</div>`:''}
         </div>
       </div>
-    `).join('') : `<div class="empty"><h3>No informal loans yet</h3><p>Log a Loan transaction from the + tab (Loan Given, Loan Taken, Received or Debt Paid) and it'll show up here grouped by person.</p></div>`}
+    `).join('') : `<div class="empty"><h3>No informal loans yet</h3><p>Log a Loan transaction (Loan Given, Loan Taken, Received or Debt Paid) and it'll show up here grouped by person.</p></div>`}
   `;
 }
 
@@ -637,6 +891,7 @@ function zakatHTML(){
   const z = zakatData();
   const s = state.settings;
   return `
+    <h2>Zakat</h2>
     <div class="card">
       <div class="card-title">Gold rates (per vori · you enter these)</div>
       ${['22','21','18'].map(k=>`
@@ -666,29 +921,52 @@ function zakatHTML(){
 function bindZakatInputs(){
   document.querySelectorAll('[data-gold]').forEach(el=>el.oninput=()=>{ state.settings.goldRates[el.dataset.gold]=parseFloat(el.value)||0; save(); });
   const k = document.getElementById('zakatKarat');
-  if(k) k.onchange=()=>{ state.settings.zakatGoldKarat=k.value; save(); renderMore(); };
+  if(k) k.onchange=()=>{ state.settings.zakatGoldKarat=k.value; save(); openSidebarSection('zakat'); };
+}
+
+function categoryListHTML(){
+  const incomeCats = categoriesFor('Income');
+  const expenseCats = categoriesFor('Expense');
+  return `
+    <h2>Categories</h2>
+    <div class="card"><div class="card-title">Income</div>${incomeCats.map(c=>`<span class="chip active" style="display:inline-block; margin:3px 4px 3px 0;">${c.replace(/_/g,' ')}</span>`).join('')}</div>
+    <div class="card"><div class="card-title">Expense</div>${expenseCats.map(c=>`<span class="chip active" style="display:inline-block; margin:3px 4px 3px 0;">${c.replace(/_/g,' ')}</span>`).join('')}</div>
+    <p class="muted small">New categories can be added inline while adding a transaction. Per-category icons and editing are coming later.</p>
+  `;
+}
+
+function accountsHTML(){
+  return `
+    <h2>Accounts</h2>
+    ${state.accounts.map(a=>`
+      <div class="card">
+        <div class="row-between" style="margin-bottom:10px;">
+          <b>${esc(a.name)}${a.archived?' <span class="muted small">(archived)</span>':''}</b>
+          <span class="muted small" style="font-family:var(--font-mono);">${fmt(accountBalance(a.id))}</span>
+        </div>
+        <div class="field"><label>Name</label><input type="text" data-acct-name="${a.id}" value="${esc(a.name)}" /></div>
+        <div class="field"><label>Starting balance</label><input type="number" data-acct-bal="${a.id}" value="${a.initialBalance}" /></div>
+        ${!a.archived?`<button class="btn danger" data-del-acct="${a.id}">Remove account</button>`:''}
+      </div>
+    `).join('')}
+    <button class="btn secondary" id="addAcctBtnSidebar">+ Add account</button>
+  `;
+}
+function bindAccountsForm(){
+  document.querySelectorAll('[data-acct-name]').forEach(el=>el.oninput=()=>{ updateAccount(el.dataset.acctName, {name:el.value}); });
+  document.querySelectorAll('[data-acct-bal]').forEach(el=>el.oninput=()=>{ updateAccount(el.dataset.acctBal, {initialBalance:parseFloat(el.value)||0}); });
+  document.querySelectorAll('[data-del-acct]').forEach(el=>el.onclick=()=>{
+    if(confirm('Remove this account? If it has transaction history it will be archived instead of deleted.')){
+      deleteAccount(el.dataset.delAcct); toast('Account removed'); openSidebarSection('accounts');
+    }
+  });
+  const addBtn = document.getElementById('addAcctBtnSidebar');
+  if(addBtn) addBtn.onclick = ()=>{ closeSheet(); addAccountSheet(); };
 }
 
 function settingsHTML(){
-  const s = state.settings;
   return `
-    <div class="card">
-      <div class="card-title">Opening balances</div>
-      ${ACCOUNTS.map(a=>`<div class="field"><label>${a.name}</label><input type="number" data-bal="${a.id}" value="${s.initialBalances[a.id]||0}" /></div>`).join('')}
-    </div>
-    <div class="card">
-      <div class="card-title">Savings targets</div>
-      <div class="field"><label>Ideal save rate (monthly)</label><input type="number" data-set="idealSaveRate" value="${s.idealSaveRate}" /></div>
-      <div class="field"><label>Annual target (strict)</label><input type="number" data-set="annualTarget" value="${s.annualTarget}" /></div>
-      <div class="field"><label>Annual target (flexible)</label><input type="number" data-set="flexibleAnnualTarget" value="${s.flexibleAnnualTarget}" /></div>
-    </div>
-    <div class="card">
-      <div class="card-title">Daily budget inputs</div>
-      <div class="field"><label>Expected monthly income <span class="muted">(0 = auto)</span></label><input type="number" data-set="expectedMonthlyIncome" value="${s.expectedMonthlyIncome}" /></div>
-      <div class="field"><label>Home support allowance</label><input type="number" data-set="homeSupport" value="${s.homeSupport}" /></div>
-      <div class="field"><label>Investment allowance</label><input type="number" data-set="investmentAllowance" value="${s.investmentAllowance}" /></div>
-      <div class="field"><label>Office cost</label><input type="number" data-set="officeCost" value="${s.officeCost}" /></div>
-    </div>
+    <h2>Settings</h2>
     <div class="card">
       <div class="card-title">Data</div>
       <button class="btn secondary" id="exportBtn">Export backup (.json)</button>
@@ -705,8 +983,6 @@ function settingsHTML(){
   `;
 }
 function bindSettingsForm(){
-  document.querySelectorAll('[data-bal]').forEach(el=>el.oninput=()=>{ state.settings.initialBalances[el.dataset.bal]=parseFloat(el.value)||0; save(); });
-  document.querySelectorAll('[data-set]').forEach(el=>el.oninput=()=>{ state.settings[el.dataset.set]=parseFloat(el.value)||0; save(); });
   document.getElementById('exportBtn').onclick = ()=>{
     const blob = new Blob([JSON.stringify(state,null,2)], {type:'application/json'});
     const url = URL.createObjectURL(blob);
@@ -718,14 +994,14 @@ function bindSettingsForm(){
     const file = e.target.files[0]; if(!file) return;
     const reader = new FileReader();
     reader.onload = ()=>{
-      try{ const parsed = JSON.parse(reader.result); state = parsed; save(); toast('Backup restored'); render(); }
+      try{ const parsed = JSON.parse(reader.result); state = parsed; save(); toast('Backup restored'); closeSheet(); render(); }
       catch(err){ toast('Could not read that file'); }
     };
     reader.readAsText(file);
   };
   document.getElementById('wipeBtn').onclick = ()=>{
     if(confirm('This erases every transaction and setting on this phone. Continue?')){
-      localStorage.removeItem(STORAGE_KEY); state = load(); toast('All data erased'); render();
+      localStorage.removeItem(STORAGE_KEY); state = load(); toast('All data erased'); closeSheet(); render();
     }
   };
 }
@@ -745,29 +1021,23 @@ function closeSheet(){ const d=document.getElementById('sheetBackdrop'); if(d) d
 /* ---------------- global event delegation ---------------- */
 document.addEventListener('click', (e)=>{
   const gotoEl = e.target.closest('[data-goto]');
-  if(gotoEl){
-    if(gotoEl.dataset.sub){
-      if(gotoEl.dataset.goto==='insights') ui.insightsSub = gotoEl.dataset.sub;
-      if(gotoEl.dataset.goto==='more') ui.moreSub = gotoEl.dataset.sub;
-    }
-    setTab(gotoEl.dataset.goto);
-    return;
-  }
+  if(gotoEl){ setTab(gotoEl.dataset.goto); return; }
+
   const txnEl = e.target.closest('[data-open-txn]');
   if(txnEl){ openTxnSheet(txnEl.dataset.openTxn); return; }
-  const ledgerType = e.target.closest('[data-ledger-type]');
-  if(ledgerType){ ui.ledgerFilterType = ledgerType.dataset.ledgerType; renderLedger(); return; }
-  const analyticsType = e.target.closest('[data-analytics-type]');
-  if(analyticsType){ ui.analyticsType = analyticsType.dataset.analyticsType; renderInsights(); return; }
-  const goldInput = e.target.closest('[data-gold]');
-  if(goldInput){ return; } // handled by input listener below via delegated bind after render
+
+  const revealEl = e.target.closest('[data-reveal-acct]');
+  if(revealEl){ ui.revealedAccounts[revealEl.dataset.revealAcct] = !ui.revealedAccounts[revealEl.dataset.revealAcct]; renderHome(); return; }
+
+  const openAcctsEl = e.target.closest('[data-open-accounts]');
+  if(openAcctsEl){ openSidebarSection('accounts'); return; }
+
+  const addAcctEl = e.target.closest('[data-add-account]');
+  if(addAcctEl){ addAccountSheet(); return; }
 });
 
-// re-bind dynamic inputs that need delegated live listeners each render
-const origRenderMore = renderMore;
-renderMore = function(){ origRenderMore(); if(ui.moreSub==='zakat') bindZakatInputs(); };
-
-document.getElementById('settingsBtn').onclick = ()=>{ ui.moreSub='settings'; setTab('more'); };
+document.getElementById('menuBtn').onclick = openSidebarMenu;
+document.getElementById('fab').onclick = openAdd;
 document.querySelectorAll('.tabbtn').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 
 /* ---------------- boot ---------------- */
