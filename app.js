@@ -7,7 +7,7 @@
 const STORAGE_KEY = 'khata_v1';
 
 // Bump this on every release — shown in the side drawer header.
-const APP_VERSION = '0.2.2';
+const APP_VERSION = '0.2.3';
 
 // Used only to seed a brand-new install, or to migrate an old install
 // that still has the hardcoded account list. Accounts now live in state.
@@ -313,6 +313,7 @@ let ui = {
   insightsSub:'monthly', analyticsType:'Expense',
   revealedAccounts:{}, netWorthRevealed:false,
   ledgerFilters:{ type:'all', range:'all', day: todayISO(), month: currentMonthKey(), account:'all', category:'all', search:'' },
+  catPageType:'Expense',
 };
 
 const TABS = ['home','ledger','goals','insights'];
@@ -532,6 +533,34 @@ function bindLedgerFilterSheet(){
 /* ---------------- ADD TRANSACTION ---------------- */
 let addState = { type:'Expense', date: todayISO(), account:'', account2:'', category:'', subcategory:'', context:'', amount:'' };
 
+function transactionSuggestions(field, type, query){
+  const seen = new Set(); const out = [];
+  const q = (query||'').trim().toLowerCase();
+  const txns = [...state.transactions].sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
+  for(const t of txns){
+    if(t.type!==type) continue;
+    const v = (t[field]||'').trim();
+    if(!v || seen.has(v)) continue;
+    if(q && !v.toLowerCase().includes(q)) continue;
+    seen.add(v); out.push(v);
+    if(out.length>=6) break;
+  }
+  return out;
+}
+function renderSuggestChips(containerId, field, inputId){
+  const el = document.getElementById(containerId);
+  const inputEl = document.getElementById(inputId);
+  if(!el || !inputEl) return;
+  const items = transactionSuggestions(field, addState.type, inputEl.value);
+  el.innerHTML = items.map(v=>`<button type="button" class="suggest-chip" data-fill-input="${inputId}" data-fill-key="${field}" data-fill-val="${esc(v)}">${esc(v)}</button>`).join('');
+  el.querySelectorAll('[data-fill-input]').forEach(b=>b.onclick=()=>{
+    const target = document.getElementById(b.dataset.fillInput);
+    target.value = b.dataset.fillVal;
+    addState[b.dataset.fillKey] = b.dataset.fillVal;
+    el.innerHTML = '';
+  });
+}
+
 function renderAddPanel(){
   const type = addState.type;
   if(!addState.account) addState.account = (activeAccounts()[0]||{}).id || '';
@@ -573,11 +602,13 @@ function renderAddPanel(){
     <div class="field">
       <label>${type==='Loan' ? "Person's name" : 'Subcategory'}</label>
       <input type="text" id="f-subcategory" placeholder="${type==='Loan'?'e.g. Rafiq':'Choose subcategory'}" value="${esc(addState.subcategory)}" />
+      <div class="suggest-chips" id="subSuggest"></div>
     </div>
 
     <div class="field">
       <label>Context <span class="muted">(optional)</span></label>
       <input type="text" id="f-context" placeholder="Extra detail" value="${esc(addState.context)}" />
+      <div class="suggest-chips" id="ctxSuggest"></div>
     </div>
 
     <div class="field">
@@ -607,6 +638,11 @@ function renderAddPanel(){
     } else { addState.category = catEl.value; }
   };
   document.getElementById('saveTxnBtn').onclick = saveTransaction;
+
+  renderSuggestChips('subSuggest','subcategory','f-subcategory');
+  renderSuggestChips('ctxSuggest','context','f-context');
+  document.getElementById('f-subcategory').addEventListener('input', ()=>renderSuggestChips('subSuggest','subcategory','f-subcategory'));
+  document.getElementById('f-context').addEventListener('input', ()=>renderSuggestChips('ctxSuggest','context','f-context'));
 }
 
 function saveTransaction(){
@@ -838,7 +874,7 @@ function sidebarMenuHTML(){
   const items = [
     ['loans','Loans','Money owed to/by people'],
     ['zakat','Zakat','Nisab & due calculator'],
-    ['categories','Categories','View your category list'],
+    ['categories','Categories','Manage your category list'],
     ['accounts','Accounts','Add, edit, archive accounts'],
     ['settings','Settings','Backup, restore, credits'],
   ];
@@ -853,23 +889,23 @@ function bindSidebarMenu(){
   document.querySelectorAll('[data-sidebar]').forEach(b=>b.onclick=()=>openSidebarSection(b.dataset.sidebar));
 }
 function openSidebarSection(key){
-  let html='';
-  if(key==='loans') html = loansHTML();
-  else if(key==='zakat') html = zakatHTML();
-  else if(key==='categories') html = categoryListHTML();
-  else if(key==='accounts') html = accountsHTML();
-  else if(key==='settings') html = settingsHTML();
-  openDrawer(`<button class="sheet-back" id="sheetBackBtn">‹ Menu</button>${html}`);
-  document.getElementById('sheetBackBtn').onclick = openSidebarMenu;
+  let html='', title='';
+  if(key==='loans'){ html = loansHTML(); title='Loans'; }
+  else if(key==='zakat'){ html = zakatHTML(); title='Zakat'; }
+  else if(key==='categories'){ html = categoryListHTML(); title='Categories'; }
+  else if(key==='accounts'){ html = accountsHTML(); title='Accounts'; }
+  else if(key==='settings'){ html = settingsHTML(); title='Settings'; }
+  closeDrawer();
+  openPage(title, html);
   if(key==='zakat') bindZakatInputs();
   if(key==='accounts') bindAccountsForm();
   if(key==='settings') bindSettingsForm();
+  if(key==='categories') bindCategoryPage();
 }
 
 function loansHTML(){
   const loans = loanBalances();
   return `
-    <h2>Loans</h2>
     ${loans.length? loans.map(p=>`
       <div class="card loan-card">
         <div>
@@ -891,7 +927,6 @@ function zakatHTML(){
   const z = zakatData();
   const s = state.settings;
   return `
-    <h2>Zakat</h2>
     <div class="card">
       <div class="card-title">Gold rates (per vori · you enter these)</div>
       ${['22','21','18'].map(k=>`
@@ -924,20 +959,81 @@ function bindZakatInputs(){
   if(k) k.onchange=()=>{ state.settings.zakatGoldKarat=k.value; save(); openSidebarSection('zakat'); };
 }
 
+function recentValues(field, type){
+  const seen = new Set(); const out = [];
+  const txns = [...state.transactions].sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
+  for(const t of txns){
+    if(t.type!==type) continue;
+    const v = (t[field]||'').trim();
+    if(!v || seen.has(v)) continue;
+    seen.add(v); out.push(v);
+    if(out.length>=10) break;
+  }
+  return out;
+}
+
 function categoryListHTML(){
-  const incomeCats = categoriesFor('Income');
-  const expenseCats = categoriesFor('Expense');
+  const type = ui.catPageType || 'Expense';
+  const builtIn = CATEGORY_TAXONOMY[type] || [];
+  const custom = state.settings.customCategories[type] || [];
+  const recentSubs = recentValues('subcategory', type);
+  const recentCtx = recentValues('context', type);
   return `
-    <h2>Categories</h2>
-    <div class="card"><div class="card-title">Income</div>${incomeCats.map(c=>`<span class="chip active" style="display:inline-block; margin:3px 4px 3px 0;">${c.replace(/_/g,' ')}</span>`).join('')}</div>
-    <div class="card"><div class="card-title">Expense</div>${expenseCats.map(c=>`<span class="chip active" style="display:inline-block; margin:3px 4px 3px 0;">${c.replace(/_/g,' ')}</span>`).join('')}</div>
-    <p class="muted small">New categories can be added inline while adding a transaction. Per-category icons and editing are coming later.</p>
+    <div class="seg" style="margin-bottom:16px;">
+      ${['Expense','Income'].map(t=>`<button data-cat-type="${t}" class="${type===t?'active':''}">${t}</button>`).join('')}
+    </div>
+    <div class="card">
+      <div class="card-title">Built-in</div>
+      ${builtIn.map(c=>`<span class="chip active" style="display:inline-block; margin:3px 4px 3px 0;">${c.replace(/_/g,' ')}</span>`).join('')}
+    </div>
+    <div class="card">
+      <div class="card-title">Custom</div>
+      ${custom.length? custom.map(c=>`<span class="chip active" style="display:inline-flex; align-items:center; gap:6px; margin:3px 4px 3px 0;">${c.replace(/_/g,' ')}<button data-remove-cat="${esc(c)}" style="background:none;border:none;color:inherit;font-weight:700;padding:0;cursor:pointer;">×</button></span>`).join('') : `<p class="muted small">No custom categories yet.</p>`}
+      <div class="field" style="margin-top:14px;">
+        <label>Add category</label>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="newCatInput" placeholder="e.g. Subscriptions" style="flex:1;" />
+          <button class="btn secondary" id="addCatBtn" style="width:auto; padding:12px 16px;">Add</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Recently used subcategories</div>
+      ${recentSubs.length? recentSubs.map(v=>`<span class="chip" style="display:inline-block; margin:3px 4px 3px 0;">${esc(v)}</span>`).join('') : `<p class="muted small">None yet.</p>`}
+    </div>
+    <div class="card">
+      <div class="card-title">Recently used contexts</div>
+      ${recentCtx.length? recentCtx.map(v=>`<span class="chip" style="display:inline-block; margin:3px 4px 3px 0;">${esc(v)}</span>`).join('') : `<p class="muted small">None yet.</p>`}
+      <p class="muted small" style="margin-top:10px;">Subcategories and contexts are free-text and learned automatically from what you type — not a managed list like Categories.</p>
+    </div>
   `;
+}
+function bindCategoryPage(){
+  document.querySelectorAll('[data-cat-type]').forEach(b=>b.onclick=()=>{ ui.catPageType=b.dataset.catType; openSidebarSection('categories'); });
+  const addBtn = document.getElementById('addCatBtn');
+  if(addBtn) addBtn.onclick = ()=>{
+    const input = document.getElementById('newCatInput');
+    const name = (input.value||'').trim();
+    if(!name){ toast('Enter a category name'); return; }
+    const clean = name.replace(/\s+/g,'_');
+    const type = ui.catPageType || 'Expense';
+    state.settings.customCategories[type] = state.settings.customCategories[type]||[];
+    if(state.settings.customCategories[type].includes(clean) || (CATEGORY_TAXONOMY[type]||[]).includes(clean)){ toast('Already exists'); return; }
+    state.settings.customCategories[type].push(clean);
+    save(); toast('Category added'); openSidebarSection('categories');
+  };
+  document.querySelectorAll('[data-remove-cat]').forEach(b=>b.onclick=()=>{
+    const type = ui.catPageType || 'Expense';
+    const name = b.dataset.removeCat;
+    if(confirm(`Remove "${name.replace(/_/g,' ')}"? Existing transactions keep this category label, but it won't be selectable for new ones.`)){
+      state.settings.customCategories[type] = (state.settings.customCategories[type]||[]).filter(c=>c!==name);
+      save(); toast('Removed'); openSidebarSection('categories');
+    }
+  });
 }
 
 function accountsHTML(){
   return `
-    <h2>Accounts</h2>
     <button class="btn secondary" id="addAcctBtnSidebar" style="margin-bottom:16px;">+ Add account</button>
     ${state.accounts.map(a=>`
       <div class="card">
@@ -961,12 +1057,11 @@ function bindAccountsForm(){
     }
   });
   const addBtn = document.getElementById('addAcctBtnSidebar');
-  if(addBtn) addBtn.onclick = ()=>{ closeDrawer(); addAccountSheet(); };
+  if(addBtn) addBtn.onclick = ()=>{ closePage(); addAccountSheet(); };
 }
 
 function settingsHTML(){
   return `
-    <h2>Settings</h2>
     <div class="card">
       <div class="card-title">Data</div>
       <button class="btn secondary" id="exportBtn">Export backup (.json)</button>
@@ -994,14 +1089,14 @@ function bindSettingsForm(){
     const file = e.target.files[0]; if(!file) return;
     const reader = new FileReader();
     reader.onload = ()=>{
-      try{ const parsed = JSON.parse(reader.result); state = parsed; save(); toast('Backup restored'); closeDrawer(); render(); }
+      try{ const parsed = JSON.parse(reader.result); state = parsed; save(); toast('Backup restored'); closePage(); render(); }
       catch(err){ toast('Could not read that file'); }
     };
     reader.readAsText(file);
   };
   document.getElementById('wipeBtn').onclick = ()=>{
     if(confirm('This erases every transaction and setting on this phone. Continue?')){
-      localStorage.removeItem(STORAGE_KEY); state = load(); toast('All data erased'); closeDrawer(); render();
+      localStorage.removeItem(STORAGE_KEY); state = load(); toast('All data erased'); closePage(); render();
     }
   };
 }
@@ -1026,6 +1121,14 @@ function openDrawer(html){
   document.getElementById('drawerBackdrop').classList.add('open');
 }
 function closeDrawer(){ document.getElementById('drawerBackdrop').classList.remove('open'); }
+
+/* ---------------- full-page overlay (sidebar sections) ---------------- */
+function openPage(title, html){
+  document.getElementById('pageOverlayTitle').textContent = title;
+  document.getElementById('pageOverlayContent').innerHTML = html;
+  document.getElementById('pageOverlay').classList.add('open');
+}
+function closePage(){ document.getElementById('pageOverlay').classList.remove('open'); }
 
 /* Drag-to-dismiss for a bottom sheet or side panel. Binds the touch
    listeners to a small dedicated dragZone (not the whole panel), and that
@@ -1085,6 +1188,7 @@ document.getElementById('addBackdrop').onclick = closeAddOverlay;
 attachSwipeToClose(document.getElementById('addPanel'), document.getElementById('addDragZone'), closeAddOverlay, {centered:true});
 document.getElementById('drawerCloseBtn').onclick = closeDrawer;
 document.getElementById('drawerBackdrop').onclick = (e)=>{ if(e.target.id==='drawerBackdrop') closeDrawer(); };
+document.getElementById('pageBackBtn').onclick = closePage;
 document.getElementById('drawerVersionText').textContent = APP_VERSION;
 document.querySelectorAll('.tabbtn').forEach(b=>b.onclick=()=>setTab(b.dataset.tab));
 
