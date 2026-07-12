@@ -82,7 +82,13 @@ function save(){
 
 /* ---------------- utils ---------------- */
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
-function todayISO(){ return new Date().toISOString().slice(0,10); }
+function todayISO(){
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 function monthKeyOf(dateStr){ return dateStr.slice(0,7); }
 function fmt(n){
   const r = Math.round(n||0);
