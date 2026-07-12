@@ -7,7 +7,7 @@
 const STORAGE_KEY = 'khata_v1';
 
 // Bump this on every release — shown in the side drawer header.
-const APP_VERSION = '0.2.3';
+const APP_VERSION = '0.2.35';
 
 // Used only to seed a brand-new install, or to migrate an old install
 // that still has the hardcoded account list. Accounts now live in state.
@@ -509,7 +509,7 @@ function ledgerFilterSheetHTML(){
     <div class="field"><label>Category</label>
       <select id="f-category"><option value="all">All</option>${catOptions.map(c=>`<option value="${c}" ${f.category===c?'selected':''}>${c.replace(/_/g,' ')}</option>`).join('')}</select>
     </div>
-    <div class="field"><label>Search subcategory / context</label>
+    <div class="field"><label>Search subcategory / tag</label>
       <input type="text" id="f-search" value="${esc(f.search)}" placeholder="e.g. Rafiq, groceries" />
     </div>
     <button class="btn" id="applyFiltersBtn">Show results</button>
@@ -533,33 +533,72 @@ function bindLedgerFilterSheet(){
 /* ---------------- ADD TRANSACTION ---------------- */
 let addState = { type:'Expense', date: todayISO(), account:'', account2:'', category:'', subcategory:'', context:'', amount:'' };
 
-function transactionSuggestions(field, type, query){
-  const seen = new Set(); const out = [];
-  const q = (query||'').trim().toLowerCase();
-  const txns = [...state.transactions].sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
-  for(const t of txns){
-    if(t.type!==type) continue;
+/* ---------------- generic autocomplete dropdown (category / subcategory / tags) ----------------
+   Click/focus a field -> shows all previous values alphabetically. Typing filters to
+   values whose label starts with the typed text. If the typed text isn't an exact
+   match to any existing value, an "+ Add ..." row appears below the filtered list
+   (only when an onAddNew handler is supplied) so the value can be confirmed/saved. */
+function historicalValues(field, type){
+  const seen = new Set();
+  state.transactions.forEach(t=>{
+    if(t.type!==type) return;
     const v = (t[field]||'').trim();
-    if(!v || seen.has(v)) continue;
-    if(q && !v.toLowerCase().includes(q)) continue;
-    seen.add(v); out.push(v);
-    if(out.length>=6) break;
-  }
-  return out;
+    if(v) seen.add(v);
+  });
+  return [...seen];
 }
-function renderSuggestChips(containerId, field, inputId){
-  const el = document.getElementById(containerId);
+
+function closeAllAutocompletes(){
+  document.querySelectorAll('.ac-dropdown').forEach(d=>d.remove());
+}
+
+function buildAutocompleteDropdown(inputEl, wrapperEl, opts){
+  closeAllAutocompletes();
+  const toLabel = opts.toLabel || (v=>v);
+  const query = inputEl.value.trim();
+  const qLower = query.toLowerCase();
+  const withLabels = opts.getList().map(v=>({ value:v, label:toLabel(v) }));
+  withLabels.sort((a,b)=>a.label.localeCompare(b.label));
+  const filtered = query ? withLabels.filter(o=>o.label.toLowerCase().startsWith(qLower)) : withLabels;
+  const exactMatch = withLabels.some(o=>o.label.toLowerCase()===qLower);
+
+  const itemsHtml = filtered.length
+    ? filtered.map(o=>`<div class="ac-item" data-ac-value="${esc(o.value)}">${esc(o.label)}</div>`).join('')
+    : (query ? '' : `<div class="ac-empty small muted">No previous entries yet</div>`);
+  const addHtml = (query && !exactMatch && opts.onAddNew) ? `<div class="ac-item ac-add" data-ac-add="1">+ Add "${esc(query)}"</div>` : '';
+  if(!itemsHtml && !addHtml) return;
+
+  const dd = document.createElement('div');
+  dd.className = 'ac-dropdown';
+  dd.innerHTML = itemsHtml + addHtml;
+  wrapperEl.appendChild(dd);
+
+  dd.querySelectorAll('[data-ac-value]').forEach(el=>{
+    el.onclick = ()=>{
+      const raw = el.dataset.acValue;
+      inputEl.value = toLabel(raw);
+      opts.onSelect(raw);
+      closeAllAutocompletes();
+    };
+  });
+  const addEl = dd.querySelector('[data-ac-add]');
+  if(addEl) addEl.onclick = ()=>{ opts.onAddNew(query); closeAllAutocompletes(); };
+}
+
+function setupAutocompleteField(inputId, wrapperId, opts){
   const inputEl = document.getElementById(inputId);
-  if(!el || !inputEl) return;
-  const items = transactionSuggestions(field, addState.type, inputEl.value);
-  el.innerHTML = items.map(v=>`<button type="button" class="suggest-chip" data-fill-input="${inputId}" data-fill-key="${field}" data-fill-val="${esc(v)}">${esc(v)}</button>`).join('');
-  el.querySelectorAll('[data-fill-input]').forEach(b=>b.onclick=()=>{
-    const target = document.getElementById(b.dataset.fillInput);
-    target.value = b.dataset.fillVal;
-    addState[b.dataset.fillKey] = b.dataset.fillVal;
-    el.innerHTML = '';
+  const wrapperEl = document.getElementById(wrapperId);
+  if(!inputEl || !wrapperEl) return;
+  inputEl.addEventListener('focus', ()=>buildAutocompleteDropdown(inputEl, wrapperEl, opts));
+  inputEl.addEventListener('input', ()=>{
+    opts.onSelect(inputEl.value);
+    buildAutocompleteDropdown(inputEl, wrapperEl, opts);
   });
 }
+
+document.addEventListener('click', (e)=>{
+  if(!e.target.closest('.ac-wrapper')) closeAllAutocompletes();
+});
 
 function renderAddPanel(){
   const type = addState.type;
@@ -591,24 +630,24 @@ function renderAddPanel(){
 
     ${type!=='Transfer' ? `
       <div class="field"><label>Category</label>
-        <select id="f-category">
-          <option value="">Choose…</option>
-          ${categoriesFor(type).map(c=>`<option value="${c}" ${addState.category===c?'selected':''}>${c.replace(/_/g,' ')}</option>`).join('')}
-          <option value="__new__">+ New category…</option>
-        </select>
+        <div class="ac-wrapper" id="catWrapper">
+          <input type="text" id="f-category" autocomplete="off" placeholder="Choose or add a category" value="${esc(addState.category.replace(/_/g,' '))}" />
+        </div>
       </div>
     ` : ''}
 
     <div class="field">
       <label>${type==='Loan' ? "Person's name" : 'Subcategory'}</label>
-      <input type="text" id="f-subcategory" placeholder="${type==='Loan'?'e.g. Rafiq':'Choose subcategory'}" value="${esc(addState.subcategory)}" />
-      <div class="suggest-chips" id="subSuggest"></div>
+      <div class="ac-wrapper" id="subWrapper">
+        <input type="text" id="f-subcategory" autocomplete="off" placeholder="${type==='Loan'?'e.g. Rafiq':'Choose or add subcategory'}" value="${esc(addState.subcategory)}" />
+      </div>
     </div>
 
     <div class="field">
-      <label>Context <span class="muted">(optional)</span></label>
-      <input type="text" id="f-context" placeholder="Extra detail" value="${esc(addState.context)}" />
-      <div class="suggest-chips" id="ctxSuggest"></div>
+      <label>Tags <span class="muted">(optional)</span></label>
+      <div class="ac-wrapper" id="tagWrapper">
+        <input type="text" id="f-context" autocomplete="off" placeholder="Choose or add a tag" value="${esc(addState.context)}" />
+      </div>
     </div>
 
     <div class="field">
@@ -622,32 +661,71 @@ function renderAddPanel(){
   document.querySelectorAll('[data-set-type]').forEach(b=>b.onclick=()=>{ addState.type=b.dataset.setType; addState.category=''; renderAddPanel(); });
   const bind = (id,key)=>{ const el=document.getElementById(id); if(el) el.oninput=el.onchange=()=>{ addState[key]=el.value; }; };
   bind('f-date','date'); bind('f-account','account'); bind('f-account2','account2');
-  bind('f-subcategory','subcategory'); bind('f-context','context'); bind('f-amount','amount');
-  const catEl = document.getElementById('f-category');
-  if(catEl) catEl.onchange = ()=>{
-    if(catEl.value==='__new__'){
-      const name = prompt('New category name (e.g. Subscriptions)');
-      if(name && name.trim()){
-        const clean = name.trim().replace(/\s+/g,'_');
-        state.settings.customCategories[type] = state.settings.customCategories[type]||[];
-        state.settings.customCategories[type].push(clean);
-        save();
-        addState.category = clean;
-      } else { addState.category=''; }
-      renderAddPanel();
-    } else { addState.category = catEl.value; }
-  };
+  bind('f-amount','amount');
   document.getElementById('saveTxnBtn').onclick = saveTransaction;
 
-  renderSuggestChips('subSuggest','subcategory','f-subcategory');
-  renderSuggestChips('ctxSuggest','context','f-context');
-  document.getElementById('f-subcategory').addEventListener('input', ()=>renderSuggestChips('subSuggest','subcategory','f-subcategory'));
-  document.getElementById('f-context').addEventListener('input', ()=>renderSuggestChips('ctxSuggest','context','f-context'));
+  bindAddAutocompletes(type);
+}
+
+function bindAddAutocompletes(type){
+  if(type!=='Transfer'){
+    setupAutocompleteField('f-category','catWrapper', {
+      getList: ()=>categoriesFor(type),
+      toLabel: v=>v.replace(/_/g,' '),
+      onSelect: (val)=>{ addState.category = val; },
+      onAddNew: type==='Loan' ? null : (query)=>{
+        const clean = query.trim().replace(/\s+/g,'_');
+        if(!clean) return;
+        if(!categoriesFor(type).includes(clean)){
+          state.settings.customCategories[type] = state.settings.customCategories[type]||[];
+          state.settings.customCategories[type].push(clean);
+          save();
+        }
+        addState.category = clean;
+        document.getElementById('f-category').value = clean.replace(/_/g,' ');
+      },
+    });
+  }
+  setupAutocompleteField('f-subcategory','subWrapper', {
+    getList: ()=>historicalValues('subcategory', type),
+    onSelect: (val)=>{ addState.subcategory = val; },
+    onAddNew: (query)=>{
+      const clean = query.trim();
+      addState.subcategory = clean;
+      document.getElementById('f-subcategory').value = clean;
+    },
+  });
+  setupAutocompleteField('f-context','tagWrapper', {
+    getList: ()=>historicalValues('context', type),
+    onSelect: (val)=>{ addState.context = val; },
+    onAddNew: (query)=>{
+      const clean = query.trim();
+      addState.context = clean;
+      document.getElementById('f-context').value = clean;
+    },
+  });
+}
+
+function resolveCategoryValue(type, raw){
+  const q = (raw||'').trim();
+  if(!q) return '';
+  const candidates = categoriesFor(type);
+  const found = candidates.find(c=>c===q || c.replace(/_/g,' ').toLowerCase()===q.toLowerCase());
+  if(found) return found;
+  if(type==='Loan') return ''; // Loan categories are fixed — no free-typed values allowed
+  const clean = q.replace(/\s+/g,'_');
+  state.settings.customCategories[type] = state.settings.customCategories[type]||[];
+  if(!state.settings.customCategories[type].includes(clean)){
+    state.settings.customCategories[type].push(clean);
+    save();
+  }
+  return clean;
 }
 
 function saveTransaction(){
   const amt = parseFloat(addState.amount);
   if(!amt || amt<=0){ toast('Enter an amount'); return; }
+  if(addState.type!=='Transfer') addState.category = resolveCategoryValue(addState.type, addState.category);
   if(addState.type!=='Transfer' && !addState.category){ toast('Choose a category'); return; }
   if(addState.type==='Loan' && !addState.subcategory.trim()){ toast("Enter the person's name"); return; }
   if(addState.type==='Transfer' && addState.account===addState.account2){ toast('Pick two different accounts'); return; }
@@ -977,7 +1055,7 @@ function categoryListHTML(){
   const builtIn = CATEGORY_TAXONOMY[type] || [];
   const custom = state.settings.customCategories[type] || [];
   const recentSubs = recentValues('subcategory', type);
-  const recentCtx = recentValues('context', type);
+  const recentTags = recentValues('context', type);
   return `
     <div class="seg" style="margin-bottom:16px;">
       ${['Expense','Income'].map(t=>`<button data-cat-type="${t}" class="${type===t?'active':''}">${t}</button>`).join('')}
@@ -987,24 +1065,22 @@ function categoryListHTML(){
       ${builtIn.map(c=>`<span class="chip active" style="display:inline-block; margin:3px 4px 3px 0;">${c.replace(/_/g,' ')}</span>`).join('')}
     </div>
     <div class="card">
-      <div class="card-title">Custom</div>
-      ${custom.length? custom.map(c=>`<span class="chip active" style="display:inline-flex; align-items:center; gap:6px; margin:3px 4px 3px 0;">${c.replace(/_/g,' ')}<button data-remove-cat="${esc(c)}" style="background:none;border:none;color:inherit;font-weight:700;padding:0;cursor:pointer;">×</button></span>`).join('') : `<p class="muted small">No custom categories yet.</p>`}
-      <div class="field" style="margin-top:14px;">
+      <div class="field" style="margin-bottom:${custom.length?'14px':'0'};">
         <label>Add category</label>
         <div style="display:flex; gap:8px;">
           <input type="text" id="newCatInput" placeholder="e.g. Subscriptions" style="flex:1;" />
           <button class="btn secondary" id="addCatBtn" style="width:auto; padding:12px 16px;">Add</button>
         </div>
       </div>
+      ${custom.length? custom.map(c=>`<span class="chip active" style="display:inline-flex; align-items:center; gap:6px; margin:3px 4px 3px 0;">${c.replace(/_/g,' ')}<button data-remove-cat="${esc(c)}" style="background:none;border:none;color:inherit;font-weight:700;padding:0;cursor:pointer;">×</button></span>`).join('') : ''}
     </div>
     <div class="card">
       <div class="card-title">Recently used subcategories</div>
       ${recentSubs.length? recentSubs.map(v=>`<span class="chip" style="display:inline-block; margin:3px 4px 3px 0;">${esc(v)}</span>`).join('') : `<p class="muted small">None yet.</p>`}
     </div>
     <div class="card">
-      <div class="card-title">Recently used contexts</div>
-      ${recentCtx.length? recentCtx.map(v=>`<span class="chip" style="display:inline-block; margin:3px 4px 3px 0;">${esc(v)}</span>`).join('') : `<p class="muted small">None yet.</p>`}
-      <p class="muted small" style="margin-top:10px;">Subcategories and contexts are free-text and learned automatically from what you type — not a managed list like Categories.</p>
+      <div class="card-title">Recently used tags</div>
+      ${recentTags.length? recentTags.map(v=>`<span class="chip" style="display:inline-block; margin:3px 4px 3px 0;">${esc(v)}</span>`).join('') : `<p class="muted small">None yet.</p>`}
     </div>
   `;
 }
