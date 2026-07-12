@@ -7,7 +7,7 @@
 const STORAGE_KEY = 'khata_v1';
 
 // Bump this on every release — shown in the side drawer header.
-const APP_VERSION = '0.2.35';
+const APP_VERSION = '0.2.36';
 
 // Used only to seed a brand-new install, or to migrate an old install
 // that still has the hardcoded account list. Accounts now live in state.
@@ -85,9 +85,14 @@ function uid(){ return Date.now().toString(36) + Math.random().toString(36).slic
 function todayISO(){
   const d = new Date();
   const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
   return `${y}-${m}-${day}`;
+}
+function formatDateDMY(iso){
+  if(!iso) return '';
+  const [y,m,d] = iso.split('-');
+  return `${d}/${m}/${y}`;
 }
 function monthKeyOf(dateStr){ return dateStr.slice(0,7); }
 function fmt(n){
@@ -318,7 +323,8 @@ let ui = {
   tab:'home',
   insightsSub:'monthly', analyticsType:'Expense',
   revealedAccounts:{}, netWorthRevealed:false,
-  ledgerFilters:{ type:'all', range:'all', day: todayISO(), month: currentMonthKey(), account:'all', category:'all', search:'' },
+  ledgerFilters:{ type:'all', range:'all', day: todayISO(), month: currentMonthKey(), account:'all', category:'all', subcategory:'all', context:'all' },
+  ledgerSearch:'', ledgerSearchOpen:false,
   catPageType:'Expense',
 };
 
@@ -352,13 +358,46 @@ function render(){
 }
 
 /* ---------------- ADD TRANSACTION (sliding overlay, independent of tabs) ---------------- */
+let editingTxnId = null;
+
 function openAdd(){
+  editingTxnId = null;
   if(!addState.account) addState.account = (activeAccounts()[0]||{}).id || '';
+  renderAddPanel();
+  document.getElementById('addOverlay').classList.add('open');
+}
+function openEditTxn(id){
+  const t = state.transactions.find(x=>x.id===id);
+  if(!t) return;
+  editingTxnId = id;
+  addState.type = t.type;
+  addState.date = t.date;
+  addState.category = t.category || '';
+  addState.subcategory = t.subcategory || '';
+  addState.context = t.context || '';
+  addState.amount = String(Math.abs(txnTotal(t)));
+  if(t.type==='Transfer'){
+    const entries = Object.entries(t.amounts).filter(([,v])=>v);
+    const neg = entries.find(([,v])=>v<0);
+    const pos = entries.find(([,v])=>v>0);
+    addState.account = neg ? neg[0] : ((activeAccounts()[0]||{}).id || '');
+    addState.account2 = pos ? pos[0] : '';
+  } else {
+    const acc = Object.keys(t.amounts).find(k=>t.amounts[k]);
+    addState.account = acc || (activeAccounts()[0]||{}).id || '';
+    addState.account2 = '';
+  }
+  closeSheet();
   renderAddPanel();
   document.getElementById('addOverlay').classList.add('open');
 }
 function closeAddOverlay(){
   document.getElementById('addOverlay').classList.remove('open');
+  if(editingTxnId){
+    // cancelling an edit — don't let the edited values leak into the next new entry
+    editingTxnId = null;
+    addState = { type:'Expense', date: todayISO(), account:(activeAccounts()[0]||{}).id||'', account2:'', category:'', subcategory:'', context:'', amount:'' };
+  }
 }
 
 /* ---------------- HOME ---------------- */
@@ -418,7 +457,7 @@ function txnRow(t){
       </div>
       <div style="text-align:right;">
         <div class="txn-amt ${cls}">${fmtSigned(total)}</div>
-        <div class="txn-sub">${t.date}</div>
+        <div class="txn-sub">${formatDateDMY(t.date)}</div>
       </div>
     </div>`;
 }
@@ -441,6 +480,18 @@ function addAccountSheet(){
 
 /* ---------------- LEDGER ---------------- */
 const FUNNEL_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 4 21 4 14 12.5 14 19 10 21 10 12.5 3 4"></polygon></svg>`;
+const SEARCH_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>`;
+const CLOSE_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
+
+function distinctFieldValues(field, type){
+  const seen = new Set();
+  state.transactions.forEach(t=>{
+    if(type!=='all' && t.type!==type) return;
+    const v = (t[field]||'').trim();
+    if(v) seen.add(v);
+  });
+  return [...seen].sort((a,b)=>a.localeCompare(b));
+}
 
 function ledgerFilterCount(){
   const f = ui.ledgerFilters;
@@ -449,7 +500,8 @@ function ledgerFilterCount(){
   if(f.range!=='all') n++;
   if(f.account!=='all') n++;
   if(f.category!=='all') n++;
-  if(f.search.trim()) n++;
+  if(f.subcategory!=='all') n++;
+  if(f.context!=='all') n++;
   return n;
 }
 
@@ -459,10 +511,8 @@ function filteredTransactions(){
   if(f.type!=='all') txns = txns.filter(t=>t.type===f.type);
   if(f.account!=='all') txns = txns.filter(t=>t.amounts[f.account]!==undefined && t.amounts[f.account]!==0);
   if(f.category!=='all') txns = txns.filter(t=>t.category===f.category);
-  if(f.search.trim()){
-    const q = f.search.trim().toLowerCase();
-    txns = txns.filter(t=>(t.subcategory||'').toLowerCase().includes(q) || (t.context||'').toLowerCase().includes(q));
-  }
+  if(f.subcategory!=='all') txns = txns.filter(t=>(t.subcategory||'')===f.subcategory);
+  if(f.context!=='all') txns = txns.filter(t=>(t.context||'')===f.context);
   if(f.range==='day'){
     txns = txns.filter(t=>t.date===f.day);
   } else if(f.range==='week'){
@@ -472,33 +522,66 @@ function filteredTransactions(){
   } else if(f.range==='month'){
     txns = txns.filter(t=>monthKeyOf(t.date)===f.month);
   }
+  if(ui.ledgerSearch && ui.ledgerSearch.trim()){
+    const q = ui.ledgerSearch.trim().toLowerCase();
+    txns = txns.filter(t=>
+      t.category.replace(/_/g,' ').toLowerCase().includes(q) ||
+      (t.subcategory||'').toLowerCase().includes(q) ||
+      (t.context||'').toLowerCase().includes(q)
+    );
+  }
   return txns;
 }
 
 function renderLedger(){
+  const count = ledgerFilterCount();
+  view.innerHTML = `
+    <div class="filter-row">
+      ${ui.ledgerSearchOpen
+        ? `<input type="text" id="ledgerSearchInput" class="ledger-search-input" autocomplete="off" placeholder="Search category, subcategory, context" value="${esc(ui.ledgerSearch)}" />`
+        : `<span class="filter-summary" id="filterSummary"></span>`
+      }
+      <div class="filter-row-actions">
+        <button class="iconbtn" id="toggleSearchBtn" aria-label="Search">${ui.ledgerSearchOpen ? CLOSE_ICON : SEARCH_ICON}</button>
+        <button class="iconbtn" id="openFiltersBtn" aria-label="Filter">${FUNNEL_ICON}${count?`<span class="filter-badge">${count}</span>`:''}</button>
+      </div>
+    </div>
+    <div id="ledgerListWrap"></div>
+  `;
+  renderLedgerList();
+
+  document.getElementById('openFiltersBtn').onclick = openLedgerFilters;
+  document.getElementById('toggleSearchBtn').onclick = ()=>{
+    if(ui.ledgerSearchOpen){ ui.ledgerSearchOpen=false; ui.ledgerSearch=''; renderLedger(); }
+    else{ ui.ledgerSearchOpen=true; renderLedger(); const el=document.getElementById('ledgerSearchInput'); if(el) el.focus(); }
+  };
+  const searchEl = document.getElementById('ledgerSearchInput');
+  if(searchEl) searchEl.oninput = ()=>{ ui.ledgerSearch = searchEl.value; renderLedgerList(); };
+}
+
+function renderLedgerList(){
   let txns = filteredTransactions();
   txns.sort((a,b)=>b.date.localeCompare(a.date)||b.id.localeCompare(a.id));
   let grouped = {};
   txns.forEach(t=>{ grouped[t.date]=grouped[t.date]||[]; grouped[t.date].push(t); });
-  const count = ledgerFilterCount();
-
-  view.innerHTML = `
-    <div class="filter-row">
-      <span class="filter-summary">${txns.length} transaction${txns.length===1?'':'s'}</span>
-      <button class="iconbtn" id="openFiltersBtn" aria-label="Filter">${FUNNEL_ICON}${count?`<span class="filter-badge">${count}</span>`:''}</button>
-    </div>
+  document.getElementById('ledgerListWrap').innerHTML = `
     ${Object.keys(grouped).length ? Object.keys(grouped).map(d=>`
-      <div class="txn-date">${d}</div>
+      <div class="txn-date">${formatDateDMY(d)}</div>
       <div class="card">${grouped[d].map(txnRow).join('')}</div>
     `).join('') : `<div class="empty"><h3>Nothing here</h3><p>Try different filters, or log a new transaction.</p></div>`}
   `;
-  document.getElementById('openFiltersBtn').onclick = openLedgerFilters;
+  const summaryEl = document.getElementById('filterSummary');
+  if(summaryEl) summaryEl.textContent = `${txns.length} transaction${txns.length===1?'':'s'}`;
 }
 function monthLabel(mk){ const [y,m]=mk.split('-'); return `${MONTH_NAMES[+m-1]} ${y}`; }
 
 function ledgerFilterSheetHTML(){
   const f = ui.ledgerFilters;
-  const catOptions = f.type==='all' || f.type==='Transfer' ? allCategoriesFlat() : categoriesFor(f.type);
+  const typeForLists = (f.type==='all'||f.type==='Transfer') ? 'all' : f.type;
+  const catOptions = (f.type==='all' || f.type==='Transfer' ? allCategoriesFlat() : categoriesFor(f.type))
+    .slice().sort((a,b)=>a.replace(/_/g,' ').localeCompare(b.replace(/_/g,' ')));
+  const subOptions = distinctFieldValues('subcategory', typeForLists);
+  const ctxOptions = distinctFieldValues('context', typeForLists);
   return `
     <h2>Filter transactions</h2>
     <div class="field"><label>Type</label>
@@ -515,8 +598,11 @@ function ledgerFilterSheetHTML(){
     <div class="field"><label>Category</label>
       <select id="f-category"><option value="all">All</option>${catOptions.map(c=>`<option value="${c}" ${f.category===c?'selected':''}>${c.replace(/_/g,' ')}</option>`).join('')}</select>
     </div>
-    <div class="field"><label>Search subcategory / tag</label>
-      <input type="text" id="f-search" value="${esc(f.search)}" placeholder="e.g. Rafiq, groceries" />
+    <div class="field"><label>Subcategory</label>
+      <select id="f-subcategory"><option value="all">All</option>${subOptions.map(v=>`<option value="${esc(v)}" ${f.subcategory===v?'selected':''}>${esc(v)}</option>`).join('')}</select>
+    </div>
+    <div class="field"><label>Context</label>
+      <select id="f-context"><option value="all">All</option>${ctxOptions.map(v=>`<option value="${esc(v)}" ${f.context===v?'selected':''}>${esc(v)}</option>`).join('')}</select>
     </div>
     <button class="btn" id="applyFiltersBtn">Show results</button>
     <div class="spacer"></div>
@@ -525,15 +611,16 @@ function ledgerFilterSheetHTML(){
 }
 function openLedgerFilters(){ showSheet(ledgerFilterSheetHTML()); bindLedgerFilterSheet(); }
 function bindLedgerFilterSheet(){
-  document.querySelectorAll('[data-f-type]').forEach(b=>b.onclick=()=>{ ui.ledgerFilters.type=b.dataset.fType; ui.ledgerFilters.category='all'; showSheet(ledgerFilterSheetHTML()); bindLedgerFilterSheet(); });
+  document.querySelectorAll('[data-f-type]').forEach(b=>b.onclick=()=>{ ui.ledgerFilters.type=b.dataset.fType; ui.ledgerFilters.category='all'; ui.ledgerFilters.subcategory='all'; ui.ledgerFilters.context='all'; showSheet(ledgerFilterSheetHTML()); bindLedgerFilterSheet(); });
   document.querySelectorAll('[data-f-range]').forEach(b=>b.onclick=()=>{ ui.ledgerFilters.range=b.dataset.fRange; showSheet(ledgerFilterSheetHTML()); bindLedgerFilterSheet(); });
   const dayEl=document.getElementById('f-day'); if(dayEl) dayEl.onchange=()=>{ ui.ledgerFilters.day=dayEl.value; };
   const monthEl=document.getElementById('f-month'); if(monthEl) monthEl.onchange=()=>{ ui.ledgerFilters.month=monthEl.value; };
   const accEl=document.getElementById('f-account'); if(accEl) accEl.onchange=()=>{ ui.ledgerFilters.account=accEl.value; };
   const catEl=document.getElementById('f-category'); if(catEl) catEl.onchange=()=>{ ui.ledgerFilters.category=catEl.value; };
-  const searchEl=document.getElementById('f-search'); if(searchEl) searchEl.oninput=()=>{ ui.ledgerFilters.search=searchEl.value; };
+  const subEl=document.getElementById('f-subcategory'); if(subEl) subEl.onchange=()=>{ ui.ledgerFilters.subcategory=subEl.value; };
+  const ctxEl=document.getElementById('f-context'); if(ctxEl) ctxEl.onchange=()=>{ ui.ledgerFilters.context=ctxEl.value; };
   document.getElementById('applyFiltersBtn').onclick=()=>{ closeSheet(); renderLedger(); };
-  document.getElementById('clearFiltersBtn').onclick=()=>{ ui.ledgerFilters={type:'all',range:'all',day:todayISO(),month:currentMonthKey(),account:'all',category:'all',search:''}; closeSheet(); renderLedger(); };
+  document.getElementById('clearFiltersBtn').onclick=()=>{ ui.ledgerFilters={type:'all',range:'all',day:todayISO(),month:currentMonthKey(),account:'all',category:'all',subcategory:'all',context:'all'}; closeSheet(); renderLedger(); };
 }
 
 /* ---------------- ADD TRANSACTION ---------------- */
@@ -611,7 +698,7 @@ function renderAddPanel(){
   if(!addState.account) addState.account = (activeAccounts()[0]||{}).id || '';
   const panel = document.getElementById('addPanelContent');
   panel.innerHTML = `
-    <h2>New Transaction Entry</h2>
+    <h2>${editingTxnId ? 'Edit Transaction Entry' : 'New Transaction Entry'}</h2>
     <div class="seg" style="margin-bottom:18px;">
       ${['Income','Expense','Loan','Transfer'].map(t=>`<button data-set-type="${t}" class="${type===t?'active':''}">${t}</button>`).join('')}
     </div>
@@ -650,9 +737,9 @@ function renderAddPanel(){
     </div>
 
     <div class="field">
-      <label>Tags <span class="muted">(optional)</span></label>
+      <label>Context <span class="muted">(optional)</span></label>
       <div class="ac-wrapper" id="tagWrapper">
-        <input type="text" id="f-context" autocomplete="off" placeholder="Choose or add a tag" value="${esc(addState.context)}" />
+        <input type="text" id="f-context" autocomplete="off" placeholder="Choose or add context" value="${esc(addState.context)}" />
       </div>
     </div>
 
@@ -661,7 +748,7 @@ function renderAddPanel(){
       <input type="number" inputmode="decimal" id="f-amount" placeholder="0" value="${addState.amount}" />
     </div>
 
-    <button class="btn" id="saveTxnBtn">Save entry</button>
+    <button class="btn" id="saveTxnBtn">${editingTxnId ? 'Save changes' : 'Save entry'}</button>
   `;
 
   document.querySelectorAll('[data-set-type]').forEach(b=>b.onclick=()=>{ addState.type=b.dataset.setType; addState.category=''; renderAddPanel(); });
@@ -737,7 +824,7 @@ function saveTransaction(){
   if(addState.type==='Transfer' && addState.account===addState.account2){ toast('Pick two different accounts'); return; }
   if(!addState.account){ toast('Add an account first'); return; }
 
-  const t = { id:uid(), date:addState.date, type:addState.type, subcategory:addState.subcategory.trim(), context:addState.context.trim(), amounts:{} };
+  const t = { id: editingTxnId || uid(), date:addState.date, type:addState.type, subcategory:addState.subcategory.trim(), context:addState.context.trim(), amounts:{} };
 
   if(addState.type==='Income'){ t.category=addState.category; t.amounts[addState.account]=amt; }
   else if(addState.type==='Expense'){ t.category=addState.category; t.amounts[addState.account]=-amt; }
@@ -753,9 +840,17 @@ function saveTransaction(){
     t.amounts[addState.account2] = amt;
   }
 
-  state.transactions.push(t);
-  save();
-  toast('Saved to the ledger');
+  if(editingTxnId){
+    const idx = state.transactions.findIndex(x=>x.id===editingTxnId);
+    if(idx>-1) state.transactions[idx] = t; else state.transactions.push(t);
+    save();
+    toast('Transaction updated');
+  } else {
+    state.transactions.push(t);
+    save();
+    toast('Saved to the ledger');
+  }
+  editingTxnId = null;
   addState = { type:addState.type, date: todayISO(), account:addState.account, account2:'', category:'', subcategory:'', context:'', amount:'' };
   closeAddOverlay();
 }
@@ -766,12 +861,14 @@ function openTxnSheet(id){
   const rows = Object.entries(t.amounts).filter(([,v])=>v).map(([acc,v])=>`<div class="row-between small" style="padding:4px 0;"><span class="muted">${esc(accountName(acc))}</span><span style="font-family:var(--font-mono);">${fmtSigned(v)}</span></div>`).join('');
   showSheet(`
     <h2>${esc(t.category.replace(/_/g,' '))}</h2>
-    <div class="muted small" style="margin-bottom:14px;">${t.date} · ${t.type}</div>
+    <div class="muted small" style="margin-bottom:14px;">${formatDateDMY(t.date)} · ${t.type}</div>
     ${t.subcategory?`<div class="small" style="margin-bottom:6px;"><b>${esc(t.subcategory)}</b></div>`:''}
     ${t.context?`<div class="muted small" style="margin-bottom:14px;">${esc(t.context)}</div>`:''}
     <div class="card">${rows}</div>
+    <button class="btn secondary" id="editTxnBtn" style="margin-bottom:10px;">Edit entry</button>
     <button class="btn danger" id="deleteTxnBtn">Delete entry</button>
   `);
+  document.getElementById('editTxnBtn').onclick = ()=>openEditTxn(id);
   document.getElementById('deleteTxnBtn').onclick = ()=>{
     state.transactions = state.transactions.filter(x=>x.id!==id);
     save(); closeSheet(); toast('Deleted'); render();
@@ -1061,7 +1158,7 @@ function categoryListHTML(){
   const builtIn = CATEGORY_TAXONOMY[type] || [];
   const custom = state.settings.customCategories[type] || [];
   const recentSubs = recentValues('subcategory', type);
-  const recentTags = recentValues('context', type);
+  const recentCtx = recentValues('context', type);
   return `
     <div class="seg" style="margin-bottom:16px;">
       ${['Expense','Income'].map(t=>`<button data-cat-type="${t}" class="${type===t?'active':''}">${t}</button>`).join('')}
@@ -1085,8 +1182,8 @@ function categoryListHTML(){
       ${recentSubs.length? recentSubs.map(v=>`<span class="chip" style="display:inline-block; margin:3px 4px 3px 0;">${esc(v)}</span>`).join('') : `<p class="muted small">None yet.</p>`}
     </div>
     <div class="card">
-      <div class="card-title">Recently used tags</div>
-      ${recentTags.length? recentTags.map(v=>`<span class="chip" style="display:inline-block; margin:3px 4px 3px 0;">${esc(v)}</span>`).join('') : `<p class="muted small">None yet.</p>`}
+      <div class="card-title">Recently used contexts</div>
+      ${recentCtx.length? recentCtx.map(v=>`<span class="chip" style="display:inline-block; margin:3px 4px 3px 0;">${esc(v)}</span>`).join('') : `<p class="muted small">None yet.</p>`}
     </div>
   `;
 }
@@ -1107,10 +1204,10 @@ function bindCategoryPage(){
   document.querySelectorAll('[data-remove-cat]').forEach(b=>b.onclick=()=>{
     const type = ui.catPageType || 'Expense';
     const name = b.dataset.removeCat;
-    if(confirm(`Remove "${name.replace(/_/g,' ')}"? Existing transactions keep this category label, but it won't be selectable for new ones.`)){
+    showConfirm(`Remove "${name.replace(/_/g,' ')}"? Existing transactions keep this category label, but it won't be selectable for new ones.`, ()=>{
       state.settings.customCategories[type] = (state.settings.customCategories[type]||[]).filter(c=>c!==name);
       save(); toast('Removed'); openSidebarSection('categories');
-    }
+    });
   });
 }
 
@@ -1134,9 +1231,9 @@ function bindAccountsForm(){
   document.querySelectorAll('[data-acct-name]').forEach(el=>el.oninput=()=>{ updateAccount(el.dataset.acctName, {name:el.value}); });
   document.querySelectorAll('[data-acct-bal]').forEach(el=>el.oninput=()=>{ updateAccount(el.dataset.acctBal, {initialBalance:parseFloat(el.value)||0}); });
   document.querySelectorAll('[data-del-acct]').forEach(el=>el.onclick=()=>{
-    if(confirm('Remove this account? If it has transaction history it will be archived instead of deleted.')){
+    showConfirm('Remove this account? If it has transaction history it will be archived instead of deleted.', ()=>{
       deleteAccount(el.dataset.delAcct); toast('Account removed'); openSidebarSection('accounts');
-    }
+    });
   });
   const addBtn = document.getElementById('addAcctBtnSidebar');
   if(addBtn) addBtn.onclick = ()=>{ closePage(); addAccountSheet(); };
@@ -1177,9 +1274,9 @@ function bindSettingsForm(){
     reader.readAsText(file);
   };
   document.getElementById('wipeBtn').onclick = ()=>{
-    if(confirm('This erases every transaction and setting on this phone. Continue?')){
+    showConfirm('This erases every transaction and setting on this phone. Continue?', ()=>{
       localStorage.removeItem(STORAGE_KEY); state = load(); toast('All data erased'); closePage(); render();
-    }
+    });
   };
 }
 
@@ -1196,6 +1293,24 @@ function ensureSheetDom(){
 }
 function showSheet(html){ ensureSheetDom(); document.getElementById('sheetContent').innerHTML = html; document.getElementById('sheetBackdrop').classList.add('open'); }
 function closeSheet(){ const d=document.getElementById('sheetBackdrop'); if(d) d.classList.remove('open'); }
+
+/* Custom in-app confirm dialog — replaces window.confirm() so the browser's
+   "<origin> says" prefix never shows. Reuses the bottom sheet. */
+function showConfirm(message, onConfirm, opts){
+  opts = opts || {};
+  const title = opts.title || 'Warning';
+  const confirmLabel = opts.confirmLabel || 'Confirm';
+  const danger = opts.danger !== false;
+  showSheet(`
+    <h2>${esc(title)}</h2>
+    <p class="small" style="margin-bottom:20px; color:var(--paper-dim); line-height:1.5;">${esc(message)}</p>
+    <button class="btn ${danger?'danger':''}" id="confirmYesBtn">${esc(confirmLabel)}</button>
+    <div class="spacer"></div>
+    <button class="btn ghost" id="confirmNoBtn">Cancel</button>
+  `);
+  document.getElementById('confirmYesBtn').onclick = ()=>{ closeSheet(); onConfirm(); };
+  document.getElementById('confirmNoBtn').onclick = closeSheet;
+}
 
 /* ---------------- side drawer (app-wide menu) ---------------- */
 function openDrawer(html){
