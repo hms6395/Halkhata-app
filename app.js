@@ -7,7 +7,7 @@
 const STORAGE_KEY = 'khata_v1';
 
 // Bump this on every release — shown in the side drawer header.
-const APP_VERSION = '0.2.36';
+const APP_VERSION = '0.2.37';
 
 // Used only to seed a brand-new install, or to migrate an old install
 // that still has the hardcoded account list. Accounts now live in state.
@@ -25,6 +25,16 @@ const CATEGORY_TAXONOMY = {
   Expense: ['Food','Transport','Beverage','Fee','Grocery','Bill','Fund','Donation','Tax','Allowance','Mismatch','Service','Medical','Gift','Salami','Rent','Accessory','Furniture','Electric','Treat','Tips','Fare','Apparel','Advance','Game','Day_out','Salary','Appliances','Supershop','Qurbani','Sports'],
   Loan:    ['Loan_Taken','Loan_Given','Debt_Paid','Received'],
 };
+
+// Display labels for Loan categories shown to the user
+const LOAN_CATEGORY_LABELS = {
+  'Loan_Taken': 'Borrowed',
+  'Loan_Given': 'Lent',
+  'Debt_Paid':  'Paid',
+  'Received':   'Received',
+};
+// Reverse map: display label -> internal value (for resolving typed input)
+const LOAN_CATEGORY_VALUES = Object.fromEntries(Object.entries(LOAN_CATEGORY_LABELS).map(([k,v])=>[v,k]));
 
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
@@ -114,6 +124,12 @@ function accountById(id){ return state.accounts.find(a=>a.id===id); }
 function accountName(id){ const a=accountById(id); return a?a.name:id; }
 function activeAccounts(){ return state.accounts.filter(a=>!a.archived); }
 function esc(s){ return (s||'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Returns the user-facing label for any category value
+function categoryDisplayLabel(type, cat){
+  if(type==='Loan') return LOAN_CATEGORY_LABELS[cat] || cat.replace(/_/g,' ');
+  return cat.replace(/_/g,' ');
+}
+
 function colorForCategory(name){
   let h=0; for(let i=0;i<name.length;i++) h = (h*31 + name.charCodeAt(i)) >>> 0;
   return CHART_PALETTE[h % CHART_PALETTE.length];
@@ -373,7 +389,8 @@ function openEditTxn(id){
   addState.type = t.type;
   addState.date = t.date;
   addState.category = t.category || '';
-  addState.subcategory = t.subcategory || '';
+  addState.subcategory = t.type==='Loan' ? '' : (t.subcategory || '');
+  addState.contact = t.type==='Loan' ? (t.subcategory || '') : '';
   addState.context = t.context || '';
   addState.amount = String(Math.abs(txnTotal(t)));
   if(t.type==='Transfer'){
@@ -396,7 +413,7 @@ function closeAddOverlay(){
   if(editingTxnId){
     // cancelling an edit — don't let the edited values leak into the next new entry
     editingTxnId = null;
-    addState = { type:'Expense', date: todayISO(), account:(activeAccounts()[0]||{}).id||'', account2:'', category:'', subcategory:'', context:'', amount:'' };
+    addState = { type:'Expense', date: todayISO(), account:(activeAccounts()[0]||{}).id||'', account2:'', category:'', subcategory:'', context:'', contact:'', amount:'' };
   }
 }
 
@@ -447,12 +464,32 @@ function renderHome(){
 }
 
 function txnRow(t){
+  if(t.type==='Transfer'){
+    // Find from (negative) and to (positive) accounts
+    const entries = Object.entries(t.amounts).filter(([,v])=>v);
+    const fromEntry = entries.find(([,v])=>v<0);
+    const toEntry   = entries.find(([,v])=>v>0);
+    const fromName  = fromEntry ? accountName(fromEntry[0]) : '?';
+    const toName    = toEntry   ? accountName(toEntry[0])   : '?';
+    const amt       = toEntry   ? Math.abs(toEntry[1]) : Math.abs(txnTotal(t));
+    return `
+      <div class="txn" data-open-txn="${t.id}">
+        <div class="txn-left">
+          <span class="txn-cat">${esc(fromName)} → ${esc(toName)}</span>
+          <span class="txn-sub">Transfer</span>
+        </div>
+        <div style="text-align:right;">
+          <div class="txn-amt transfer">${state.settings.currency}${Math.round(amt).toLocaleString('en-US')}</div>
+          <div class="txn-sub">${formatDateDMY(t.date)}</div>
+        </div>
+      </div>`;
+  }
   const total = txnTotal(t);
   const cls = total>=0 ? 'pos':'neg';
   return `
     <div class="txn" data-open-txn="${t.id}">
       <div class="txn-left">
-        <span class="txn-cat">${esc(t.category.replace(/_/g,' '))}</span>
+        <span class="txn-cat">${esc(categoryDisplayLabel(t.type, t.category))}</span>
         <span class="txn-sub">${esc(t.subcategory||'')}${t.subcategory&&t.context?' · ':''}${esc(t.context||'')}</span>
       </div>
       <div style="text-align:right;">
@@ -577,9 +614,11 @@ function monthLabel(mk){ const [y,m]=mk.split('-'); return `${MONTH_NAMES[+m-1]}
 
 function ledgerFilterSheetHTML(){
   const f = ui.ledgerFilters;
-  const typeForLists = (f.type==='all'||f.type==='Transfer') ? 'all' : f.type;
-  const catOptions = (f.type==='all' || f.type==='Transfer' ? allCategoriesFlat() : categoriesFor(f.type))
-    .slice().sort((a,b)=>a.replace(/_/g,' ').localeCompare(b.replace(/_/g,' ')));
+  const isTransfer = f.type==='Transfer';
+  const isLoan = f.type==='Loan';
+  const typeForLists = (f.type==='all'||isTransfer) ? 'all' : f.type;
+  const catOptions = (f.type==='all' ? allCategoriesFlat() : categoriesFor(f.type))
+    .slice().sort((a,b)=>categoryDisplayLabel(f.type,a).localeCompare(categoryDisplayLabel(f.type,b)));
   const subOptions = distinctFieldValues('subcategory', typeForLists);
   const ctxOptions = distinctFieldValues('context', typeForLists);
   return `
@@ -595,15 +634,21 @@ function ledgerFilterSheetHTML(){
     <div class="field"><label>Account</label>
       <select id="f-account"><option value="all">All accounts</option>${state.accounts.map(a=>`<option value="${a.id}" ${f.account===a.id?'selected':''}>${esc(a.name)}</option>`).join('')}</select>
     </div>
+    ${!isTransfer ? `
     <div class="field"><label>Category</label>
-      <select id="f-category"><option value="all">All</option>${catOptions.map(c=>`<option value="${c}" ${f.category===c?'selected':''}>${c.replace(/_/g,' ')}</option>`).join('')}</select>
-    </div>
+      <select id="f-category"><option value="all">All</option>${catOptions.map(c=>`<option value="${c}" ${f.category===c?'selected':''}>${categoryDisplayLabel(f.type,c)}</option>`).join('')}</select>
+    </div>` : ''}
+    ${!isTransfer && !isLoan ? `
     <div class="field"><label>Subcategory</label>
       <select id="f-subcategory"><option value="all">All</option>${subOptions.map(v=>`<option value="${esc(v)}" ${f.subcategory===v?'selected':''}>${esc(v)}</option>`).join('')}</select>
     </div>
     <div class="field"><label>Context</label>
       <select id="f-context"><option value="all">All</option>${ctxOptions.map(v=>`<option value="${esc(v)}" ${f.context===v?'selected':''}>${esc(v)}</option>`).join('')}</select>
-    </div>
+    </div>` : ''}
+    ${isLoan ? `
+    <div class="field"><label>Creditor / Debtor</label>
+      <select id="f-subcategory"><option value="all">All</option>${subOptions.map(v=>`<option value="${esc(v)}" ${f.subcategory===v?'selected':''}>${esc(v)}</option>`).join('')}</select>
+    </div>` : ''}
     <button class="btn" id="applyFiltersBtn">Show results</button>
     <div class="spacer"></div>
     <button class="btn ghost" id="clearFiltersBtn">Clear all filters</button>
@@ -624,7 +669,7 @@ function bindLedgerFilterSheet(){
 }
 
 /* ---------------- ADD TRANSACTION ---------------- */
-let addState = { type:'Expense', date: todayISO(), account:'', account2:'', category:'', subcategory:'', context:'', amount:'' };
+let addState = { type:'Expense', date: todayISO(), account:'', account2:'', category:'', subcategory:'', context:'', contact:'', amount:'' };
 
 /* ---------------- generic autocomplete dropdown (category / subcategory / tags) ----------------
    Click/focus a field -> shows all previous values alphabetically. Typing filters to
@@ -633,9 +678,11 @@ let addState = { type:'Expense', date: todayISO(), account:'', account2:'', cate
    (only when an onAddNew handler is supplied) so the value can be confirmed/saved. */
 function historicalValues(field, type){
   const seen = new Set();
+  // 'contact' is the UI name for the subcategory field on Loan transactions
+  const actualField = (field==='contact') ? 'subcategory' : field;
   state.transactions.forEach(t=>{
     if(t.type!==type) return;
-    const v = (t[field]||'').trim();
+    const v = (t[actualField]||'').trim();
     if(v) seen.add(v);
   });
   return [...seen];
@@ -697,6 +744,7 @@ function renderAddPanel(){
   const type = addState.type;
   if(!addState.account) addState.account = (activeAccounts()[0]||{}).id || '';
   const panel = document.getElementById('addPanelContent');
+  const loanCatValue = addState.category && LOAN_CATEGORY_LABELS[addState.category] ? addState.category : '';
   panel.innerHTML = `
     <h2>${editingTxnId ? 'Edit Transaction Entry' : 'New Transaction Entry'}</h2>
     <div class="seg" style="margin-bottom:18px;">
@@ -721,27 +769,39 @@ function renderAddPanel(){
       </div>
     `}
 
-    ${type!=='Transfer' ? `
+    ${type==='Loan' ? `
+      <div class="field"><label>Category</label>
+        <select id="f-category">
+          <option value="">Choose…</option>
+          ${Object.entries(LOAN_CATEGORY_LABELS).map(([val,label])=>`<option value="${val}" ${loanCatValue===val?'selected':''}>${label}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>Creditor / Debtor</label>
+        <div class="ac-wrapper" id="contactWrapper">
+          <input type="text" id="f-contact" autocomplete="off" placeholder="e.g. Rafiq" value="${esc(addState.contact)}" />
+        </div>
+      </div>
+    ` : type!=='Transfer' ? `
       <div class="field"><label>Category</label>
         <div class="ac-wrapper" id="catWrapper">
           <input type="text" id="f-category" autocomplete="off" placeholder="Choose or add a category" value="${esc(addState.category.replace(/_/g,' '))}" />
         </div>
       </div>
+      <div class="field"><label>Subcategory</label>
+        <div class="ac-wrapper" id="subWrapper">
+          <input type="text" id="f-subcategory" autocomplete="off" placeholder="Choose or add subcategory" value="${esc(addState.subcategory)}" />
+        </div>
+      </div>
     ` : ''}
 
-    <div class="field">
-      <label>${type==='Loan' ? "Person's name" : 'Subcategory'}</label>
-      <div class="ac-wrapper" id="subWrapper">
-        <input type="text" id="f-subcategory" autocomplete="off" placeholder="${type==='Loan'?'e.g. Rafiq':'Choose or add subcategory'}" value="${esc(addState.subcategory)}" />
+    ${type!=='Transfer' && type!=='Loan' ? `
+      <div class="field">
+        <label>Context <span class="muted">(optional)</span></label>
+        <div class="ac-wrapper" id="tagWrapper">
+          <input type="text" id="f-context" autocomplete="off" placeholder="Choose or add context" value="${esc(addState.context)}" />
+        </div>
       </div>
-    </div>
-
-    <div class="field">
-      <label>Context <span class="muted">(optional)</span></label>
-      <div class="ac-wrapper" id="tagWrapper">
-        <input type="text" id="f-context" autocomplete="off" placeholder="Choose or add context" value="${esc(addState.context)}" />
-      </div>
-    </div>
+    ` : ''}
 
     <div class="field">
       <label>Amount</label>
@@ -751,22 +811,27 @@ function renderAddPanel(){
     <button class="btn" id="saveTxnBtn">${editingTxnId ? 'Save changes' : 'Save entry'}</button>
   `;
 
-  document.querySelectorAll('[data-set-type]').forEach(b=>b.onclick=()=>{ addState.type=b.dataset.setType; addState.category=''; renderAddPanel(); });
+  document.querySelectorAll('[data-set-type]').forEach(b=>b.onclick=()=>{ addState.type=b.dataset.setType; addState.category=''; addState.subcategory=''; addState.contact=''; renderAddPanel(); });
   const bind = (id,key)=>{ const el=document.getElementById(id); if(el) el.oninput=el.onchange=()=>{ addState[key]=el.value; }; };
   bind('f-date','date'); bind('f-account','account'); bind('f-account2','account2');
   bind('f-amount','amount');
+  // Loan category is a plain select, not autocomplete
+  if(type==='Loan'){
+    const catSel = document.getElementById('f-category');
+    if(catSel) catSel.onchange = ()=>{ addState.category = catSel.value; };
+  }
   document.getElementById('saveTxnBtn').onclick = saveTransaction;
 
   bindAddAutocompletes(type);
 }
 
 function bindAddAutocompletes(type){
-  if(type!=='Transfer'){
+  if(type!=='Transfer' && type!=='Loan'){
     setupAutocompleteField('f-category','catWrapper', {
       getList: ()=>categoriesFor(type),
       toLabel: v=>v.replace(/_/g,' '),
       onSelect: (val)=>{ addState.category = val; },
-      onAddNew: type==='Loan' ? null : (query)=>{
+      onAddNew: (query)=>{
         const clean = query.trim().replace(/\s+/g,'_');
         if(!clean) return;
         if(!categoriesFor(type).includes(clean)){
@@ -778,25 +843,37 @@ function bindAddAutocompletes(type){
         document.getElementById('f-category').value = clean.replace(/_/g,' ');
       },
     });
+    setupAutocompleteField('f-subcategory','subWrapper', {
+      getList: ()=>historicalValues('subcategory', type),
+      onSelect: (val)=>{ addState.subcategory = val; },
+      onAddNew: (query)=>{
+        const clean = query.trim();
+        addState.subcategory = clean;
+        document.getElementById('f-subcategory').value = clean;
+      },
+    });
+    setupAutocompleteField('f-context','tagWrapper', {
+      getList: ()=>historicalValues('context', type),
+      onSelect: (val)=>{ addState.context = val; },
+      onAddNew: (query)=>{
+        const clean = query.trim();
+        addState.context = clean;
+        document.getElementById('f-context').value = clean;
+      },
+    });
   }
-  setupAutocompleteField('f-subcategory','subWrapper', {
-    getList: ()=>historicalValues('subcategory', type),
-    onSelect: (val)=>{ addState.subcategory = val; },
-    onAddNew: (query)=>{
-      const clean = query.trim();
-      addState.subcategory = clean;
-      document.getElementById('f-subcategory').value = clean;
-    },
-  });
-  setupAutocompleteField('f-context','tagWrapper', {
-    getList: ()=>historicalValues('context', type),
-    onSelect: (val)=>{ addState.context = val; },
-    onAddNew: (query)=>{
-      const clean = query.trim();
-      addState.context = clean;
-      document.getElementById('f-context').value = clean;
-    },
-  });
+  if(type==='Loan'){
+    // Contact (Creditor/Debtor) uses its own history pool separate from subcategory
+    setupAutocompleteField('f-contact','contactWrapper', {
+      getList: ()=>historicalValues('contact', type),
+      onSelect: (val)=>{ addState.contact = val; },
+      onAddNew: (query)=>{
+        const clean = query.trim();
+        addState.contact = clean;
+        document.getElementById('f-contact').value = clean;
+      },
+    });
+  }
 }
 
 function resolveCategoryValue(type, raw){
@@ -818,13 +895,19 @@ function resolveCategoryValue(type, raw){
 function saveTransaction(){
   const amt = parseFloat(addState.amount);
   if(!amt || amt<=0){ toast('Enter an amount'); return; }
-  if(addState.type!=='Transfer') addState.category = resolveCategoryValue(addState.type, addState.category);
-  if(addState.type!=='Transfer' && !addState.category){ toast('Choose a category'); return; }
-  if(addState.type==='Loan' && !addState.subcategory.trim()){ toast("Enter the person's name"); return; }
+  if(addState.type==='Loan'){
+    if(!addState.category){ toast('Choose a category'); return; }
+    if(!addState.contact.trim()){ toast('Enter the creditor/debtor name'); return; }
+  } else if(addState.type!=='Transfer'){
+    addState.category = resolveCategoryValue(addState.type, addState.category);
+    if(!addState.category){ toast('Choose a category'); return; }
+  }
   if(addState.type==='Transfer' && addState.account===addState.account2){ toast('Pick two different accounts'); return; }
   if(!addState.account){ toast('Add an account first'); return; }
 
-  const t = { id: editingTxnId || uid(), date:addState.date, type:addState.type, subcategory:addState.subcategory.trim(), context:addState.context.trim(), amounts:{} };
+  // For Loan: store contact name in subcategory field (data model unchanged)
+  const subcategoryValue = addState.type==='Loan' ? addState.contact.trim() : addState.subcategory.trim();
+  const t = { id: editingTxnId || uid(), date:addState.date, type:addState.type, subcategory:subcategoryValue, context:addState.context.trim(), amounts:{} };
 
   if(addState.type==='Income'){ t.category=addState.category; t.amounts[addState.account]=amt; }
   else if(addState.type==='Expense'){ t.category=addState.category; t.amounts[addState.account]=-amt; }
@@ -851,7 +934,7 @@ function saveTransaction(){
     toast('Saved to the ledger');
   }
   editingTxnId = null;
-  addState = { type:addState.type, date: todayISO(), account:addState.account, account2:'', category:'', subcategory:'', context:'', amount:'' };
+  addState = { type:addState.type, date: todayISO(), account:addState.account, account2:'', category:'', subcategory:'', context:'', contact:'', amount:'' };
   closeAddOverlay();
 }
 
@@ -859,19 +942,36 @@ function openTxnSheet(id){
   const t = state.transactions.find(x=>x.id===id);
   if(!t) return;
   const rows = Object.entries(t.amounts).filter(([,v])=>v).map(([acc,v])=>`<div class="row-between small" style="padding:4px 0;"><span class="muted">${esc(accountName(acc))}</span><span style="font-family:var(--font-mono);">${fmtSigned(v)}</span></div>`).join('');
+
+  let titleLine, subLine = '', ctxLine = '';
+  if(t.type==='Transfer'){
+    const fromEntry = Object.entries(t.amounts).find(([,v])=>v<0);
+    const toEntry   = Object.entries(t.amounts).find(([,v])=>v>0);
+    titleLine = `${esc(fromEntry?accountName(fromEntry[0]):'?')} → ${esc(toEntry?accountName(toEntry[0]):'?')}`;
+  } else {
+    titleLine = esc(categoryDisplayLabel(t.type, t.category));
+    if(t.type==='Loan' && t.subcategory){
+      subLine = `<div class="small" style="margin-bottom:6px;"><span class="muted">Creditor/Debtor: </span><b>${esc(t.subcategory)}</b></div>`;
+    } else if(t.subcategory){
+      subLine = `<div class="small" style="margin-bottom:6px;"><b>${esc(t.subcategory)}</b></div>`;
+    }
+    if(t.context) ctxLine = `<div class="muted small" style="margin-bottom:14px;">${esc(t.context)}</div>`;
+  }
+
   showSheet(`
-    <h2>${esc(t.category.replace(/_/g,' '))}</h2>
+    <h2>${titleLine}</h2>
     <div class="muted small" style="margin-bottom:14px;">${formatDateDMY(t.date)} · ${t.type}</div>
-    ${t.subcategory?`<div class="small" style="margin-bottom:6px;"><b>${esc(t.subcategory)}</b></div>`:''}
-    ${t.context?`<div class="muted small" style="margin-bottom:14px;">${esc(t.context)}</div>`:''}
+    ${subLine}${ctxLine}
     <div class="card">${rows}</div>
     <button class="btn secondary" id="editTxnBtn" style="margin-bottom:10px;">Edit entry</button>
     <button class="btn danger" id="deleteTxnBtn">Delete entry</button>
   `);
   document.getElementById('editTxnBtn').onclick = ()=>openEditTxn(id);
   document.getElementById('deleteTxnBtn').onclick = ()=>{
-    state.transactions = state.transactions.filter(x=>x.id!==id);
-    save(); closeSheet(); toast('Deleted'); render();
+    showConfirm('Delete this transaction? This cannot be undone.', ()=>{
+      state.transactions = state.transactions.filter(x=>x.id!==id);
+      save(); toast('Deleted'); render();
+    }, { title:'Delete transaction', confirmLabel:'Delete', danger:true });
   };
 }
 

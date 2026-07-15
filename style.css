@@ -230,8 +230,9 @@ a{color:inherit;}
 .txn-cat{font-size:14px; color:var(--paper); font-weight:600;}
 .txn-sub{font-size:12px; color:var(--sage);}
 .txn-amt{font-family:var(--font-mono); font-size:14.5px; font-weight:600;}
-.txn-amt.pos{color:var(--gold);}
+.txn-amt.pos{color:#4caf85;}
 .txn-amt.neg{color:var(--rose);}
+.txn-amt.transfer{color:var(--sage);}
 .txn-date{font-family:var(--font-mono); font-size:10px; color:var(--sage); text-transform:uppercase; letter-spacing:0.08em; margin:16px 0 4px;}
 
 /* ---------- Filters ---------- */
