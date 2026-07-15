@@ -7,7 +7,7 @@
 const STORAGE_KEY = 'khata_v1';
 
 // Bump this on every release — shown in the side drawer header.
-const APP_VERSION = '0.2.37';
+const APP_VERSION = '0.2.38';
 
 // Used only to seed a brand-new install, or to migrate an old install
 // that still has the hardcoded account list. Accounts now live in state.
@@ -745,6 +745,12 @@ function renderAddPanel(){
   if(!addState.account) addState.account = (activeAccounts()[0]||{}).id || '';
   const panel = document.getElementById('addPanelContent');
   const loanCatValue = addState.category && LOAN_CATEGORY_LABELS[addState.category] ? addState.category : '';
+  // Creditor = you owe them (Loan_Taken / Debt_Paid); Debtor = they owe you (Loan_Given / Received)
+  const contactPlaceholder = (loanCatValue==='Loan_Taken' || loanCatValue==='Debt_Paid')
+    ? 'Choose your creditor'
+    : (loanCatValue==='Loan_Given' || loanCatValue==='Received')
+      ? 'Choose your debtor'
+      : 'Choose creditor / debtor';
   panel.innerHTML = `
     <h2>${editingTxnId ? 'Edit Transaction Entry' : 'New Transaction Entry'}</h2>
     <div class="seg" style="margin-bottom:18px;">
@@ -778,27 +784,27 @@ function renderAddPanel(){
       </div>
       <div class="field"><label>Creditor / Debtor</label>
         <div class="ac-wrapper" id="contactWrapper">
-          <input type="text" id="f-contact" autocomplete="off" placeholder="e.g. Rafiq" value="${esc(addState.contact)}" />
+          <input type="text" id="f-contact" autocomplete="off" placeholder="${contactPlaceholder}" value="${esc(addState.contact)}" />
         </div>
       </div>
     ` : type!=='Transfer' ? `
       <div class="field"><label>Category</label>
         <div class="ac-wrapper" id="catWrapper">
-          <input type="text" id="f-category" autocomplete="off" placeholder="Choose or add a category" value="${esc(addState.category.replace(/_/g,' '))}" />
+          <input type="text" id="f-category" autocomplete="off" placeholder="Choose a category" value="${esc(addState.category.replace(/_/g,' '))}" />
         </div>
       </div>
       <div class="field"><label>Subcategory</label>
         <div class="ac-wrapper" id="subWrapper">
-          <input type="text" id="f-subcategory" autocomplete="off" placeholder="Choose or add subcategory" value="${esc(addState.subcategory)}" />
+          <input type="text" id="f-subcategory" autocomplete="off" placeholder="Choose a subcategory" value="${esc(addState.subcategory)}" />
         </div>
       </div>
     ` : ''}
 
-    ${type!=='Transfer' && type!=='Loan' ? `
+    ${type!=='Transfer' ? `
       <div class="field">
         <label>Context <span class="muted">(optional)</span></label>
         <div class="ac-wrapper" id="tagWrapper">
-          <input type="text" id="f-context" autocomplete="off" placeholder="Choose or add context" value="${esc(addState.context)}" />
+          <input type="text" id="f-context" autocomplete="off" placeholder="Choose a context" value="${esc(addState.context)}" />
         </div>
       </div>
     ` : ''}
@@ -815,10 +821,10 @@ function renderAddPanel(){
   const bind = (id,key)=>{ const el=document.getElementById(id); if(el) el.oninput=el.onchange=()=>{ addState[key]=el.value; }; };
   bind('f-date','date'); bind('f-account','account'); bind('f-account2','account2');
   bind('f-amount','amount');
-  // Loan category is a plain select, not autocomplete
+  // Loan category is a plain select — re-render panel on change so contact placeholder updates
   if(type==='Loan'){
     const catSel = document.getElementById('f-category');
-    if(catSel) catSel.onchange = ()=>{ addState.category = catSel.value; };
+    if(catSel) catSel.onchange = ()=>{ addState.category = catSel.value; renderAddPanel(); };
   }
   document.getElementById('saveTxnBtn').onclick = saveTransaction;
 
@@ -871,6 +877,16 @@ function bindAddAutocompletes(type){
         const clean = query.trim();
         addState.contact = clean;
         document.getElementById('f-contact').value = clean;
+      },
+    });
+    // Context available for Loan too
+    setupAutocompleteField('f-context','tagWrapper', {
+      getList: ()=>historicalValues('context', type),
+      onSelect: (val)=>{ addState.context = val; },
+      onAddNew: (query)=>{
+        const clean = query.trim();
+        addState.context = clean;
+        document.getElementById('f-context').value = clean;
       },
     });
   }
@@ -1437,26 +1453,32 @@ function closePage(){ document.getElementById('pageOverlay').classList.remove('o
 function attachSwipeToClose(panel, dragZone, closeFn, opts){
   opts = opts || {};
   const centered = !!opts.centered;
-  let start=0, current=0, dragging=false;
+  let startY=0, current=0, dragging=false, confirmed=false;
   dragZone.addEventListener('touchstart', (e)=>{
-    start = e.touches[0].clientY; current = start; dragging = true;
-    panel.style.transition = 'none';
+    startY = e.touches[0].clientY; current = startY; dragging = true; confirmed = false;
   }, {passive:true});
   dragZone.addEventListener('touchmove', (e)=>{
     if(!dragging) return;
-    e.preventDefault();
     current = e.touches[0].clientY;
-    const delta = Math.max(0, current-start);
-    panel.style.transform = centered ? `translate(-50%, ${delta}px)` : `translateY(${delta}px)`;
+    const delta = current - startY;
+    // Only confirm a downward drag gesture — upward movement never moves the panel
+    if(!confirmed){
+      if(delta <= 0) return; // moving up or flat: ignore, let normal scroll happen
+      confirmed = true;
+      panel.style.transition = 'none';
+    }
+    e.preventDefault();
+    const clamped = Math.max(0, delta);
+    panel.style.transform = centered ? `translate(-50%, ${clamped}px)` : `translateY(${clamped}px)`;
   }, {passive:false});
   dragZone.addEventListener('touchend', ()=>{
     if(!dragging) return;
-    dragging = false;
+    dragging = false; confirmed = false;
     panel.style.transition = '';
-    const delta = current-start;
+    const delta = current - startY;
     panel.style.transform = '';
-    if(delta>90) closeFn();
-    start=0; current=0;
+    if(delta > 90) closeFn();
+    startY = 0; current = 0;
   });
 }
 
